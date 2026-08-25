@@ -25,6 +25,7 @@ final class ClaudeCliAgentLoop(
     modelOverride: Option[String] = None,
     maxBudgetUsd:  String         = "1.00",
     runTimeout:    Duration       = 120.seconds,
+    allowShell:    Boolean        = false,
 ) extends AgentLoop:
 
   import ClaudeCliAgentLoop.*
@@ -61,13 +62,16 @@ final class ClaudeCliAgentLoop(
   //    with `--mcp-config`;
   //  - `--json-schema` constrains the final output (the judge);
   //  - local-fs/shell/agentic builtins are stripped via `--disallowedTools`
-  //    (which must stay LAST — it's variadic).
+  //    (which must stay LAST — it's variadic), EXCEPT `Bash` when `allowShell`
+  //    is set (so an eval can measure whether the agent chooses the shell — e.g.
+  //    running a CLI — vs an MCP tool).
   def cliArgs(prompt: String, model: String, mcpConfigPath: Option[String], serverNames: List[String], web: Boolean, schema: Option[Json]): List[String] =
     val mcpConfigArgs = mcpConfigPath.toList.flatMap(p => List("--mcp-config", p))
     val schemaArgs    = schema.toList.flatMap(s => List("--json-schema", s.toJson))
-    val allowed       = (if web then webTools else Nil) ++ serverNames.map(n => s"mcp__$n")
+    val shellTools    = if allowShell then List("Bash") else Nil
+    val allowed       = (if web then webTools else Nil) ++ serverNames.map(n => s"mcp__$n") ++ shellTools
     val allowedArgs   = if allowed.isEmpty then Nil else List("--allowedTools") ++ allowed
-    val disallowed    = disallowedTools ++ (if web then Nil else webTools)
+    val disallowed    = (disallowedTools ++ (if web then Nil else webTools)).filterNot(shellTools.contains)
     List("-p", prompt, "--setting-sources", "", "--strict-mcp-config", "--output-format", "stream-json", "--verbose", "--max-budget-usd", maxBudgetUsd, "--model", model) ++
       schemaArgs ++ mcpConfigArgs ++ allowedArgs ++ List("--disallowedTools") ++ disallowed
 
@@ -166,8 +170,9 @@ object ClaudeCliAgentLoop:
       modelOverride: Option[String] = None,
       maxBudgetUsd:  String         = "1.00",
       runTimeout:    Duration       = 120.seconds,
+      allowShell:    Boolean        = false,
   ): ClaudeCliAgentLoop =
-    new ClaudeCliAgentLoop(modelOverride, maxBudgetUsd, runTimeout)
+    new ClaudeCliAgentLoop(modelOverride, maxBudgetUsd, runTimeout, allowShell)
 
   // Credentials that authenticate `claude -p`, in the CLI's precedence order
   // (ANTHROPIC_API_KEY wins for `-p`).

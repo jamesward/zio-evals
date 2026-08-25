@@ -48,4 +48,14 @@ object ClaudeCliArgsSpec extends ZIOSpecDefault:
       val args = ClaudeCliAgentLoop(modelOverride = Some("sonnet")).cliArgsFor("q", "haiku", Nil, AgentPolicy.default)
       assertTrue(args(args.indexOf("--model") + 1) == "sonnet")
     },
+    test("allowShell grants Bash and removes it from disallowed (agent can choose shell vs MCP)") {
+      val args = ClaudeCliAgentLoop(allowShell = true).cliArgsFor("q", "m", List(McpServerConfig("sbtmcp", "http://h/x")), AgentPolicy.default)
+      val allowed    = slice(args, "--allowedTools")
+      val disallowed = slice(args, "--disallowedTools")
+      assertTrue(
+        allowed.contains("Bash"),
+        allowed.contains("mcp__sbtmcp"),
+        !disallowed.contains("Bash"),
+      )
+    },
   )
