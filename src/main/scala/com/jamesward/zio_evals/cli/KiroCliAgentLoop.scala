@@ -4,7 +4,7 @@ package cli
 import zio.*
 import zio.json.EncoderOps
 import zio.json.ast.Json
-import zio.process.Command
+import zio.process.{Command, ProcessInput}
 
 import java.io.File
 import java.nio.file.Files
@@ -12,9 +12,14 @@ import java.nio.file.Files
 // An `AgentLoop` backed by the `kiro-cli chat` CLI in headless mode
 // (`--no-interactive --trust-all-tools`). The MCP servers an arm exposes are
 // surfaced through a throwaway agent config written to `<cwd>/.kiro/agents/
-// <agentName>.json` (remote HTTP servers = `{url, headers}`), with `KIRO_HOME`
-// pointed at an isolated temp dir so the host's global agents/settings/steering
-// don't leak into the run.
+// <agentName>.json` (remote HTTP servers = `{url, headers}`) in a temp working
+// directory — a workspace-local agent takes precedence over global ones. The
+// process runs with the REAL environment (NOT an isolated `KIRO_HOME`) so
+// kiro-cli's stored credentials under `~/.kiro` still authenticate; the agent
+// config sets `"includeMcpJson": false` so the host's global
+// `~/.kiro/settings/mcp.json` servers don't leak into the run. When the arm
+// exposes MCP servers, `--require-mcp-startup` makes chat exit non-zero (before
+// any paid model call) if a server fails to connect.
 //
 // LIMITATION vs the claude backend: kiro-cli's headless output is plain text
 // with no structured token/turn accounting and no output-schema constraint. So
@@ -45,20 +50,23 @@ final class KiroCliAgentLoop(
   private def effectiveModel(modelId: String): Option[String] =
     modelOverride.orElse(Option(modelId).map(_.trim).filter(_.nonEmpty))
 
-  // The agent config JSON written to `.kiro/agents/<agentName>.json`. Pure so a
-  // unit test can assert the MCP wiring + tool restriction without the CLI.
+  // The agent config JSON written to `<cwd>/.kiro/agents/<agentName>.json`. Pure
+  // so a unit test can assert the MCP wiring + tool restriction without the CLI.
   // Built-in `tools` is limited to the web tool (only when the arm enables web)
   // so the agent can't reach the host shell/fs; MCP tools stay available via
-  // `mcpServers` and are auto-approved through `allowedTools` (`@<server>`).
+  // `mcpServers` (auto-approved by `--trust-all-tools` + the `@<server>` grant
+  // in `allowedTools`). `includeMcpJson: false` keeps the host's global
+  // `~/.kiro/settings/mcp.json` servers out of the run.
   def agentConfig(modelId: String, mcpServers: List[McpServerConfig], policy: AgentPolicy): Json =
     val webTools     = if policy.web then List("web_fetch") else Nil
     val serverGrants = mcpServers.map(s => s"@${s.name}")
     val base: List[(String, Json)] =
       List(
-        "name"         -> Json.Str(agentName),
-        "description"  -> Json.Str("zio-evals arm"),
-        "tools"        -> Json.Arr(webTools.map(Json.Str.apply)*),
-        "allowedTools" -> Json.Arr((webTools ++ serverGrants).map(Json.Str.apply)*),
+        "name"           -> Json.Str(agentName),
+        "description"    -> Json.Str("zio-evals arm"),
+        "tools"          -> Json.Arr(webTools.map(Json.Str.apply)*),
+        "allowedTools"   -> Json.Arr((webTools ++ serverGrants).map(Json.Str.apply)*),
+        "includeMcpJson" -> Json.Bool(false),
       )
     val withPrompt = systemPrompt.fold(base)(p => base :+ ("prompt" -> Json.Str(p)))
     val withModel  = effectiveModel(modelId).fold(withPrompt)(m => withPrompt :+ ("model" -> Json.Str(m)))
@@ -66,16 +74,19 @@ final class KiroCliAgentLoop(
     Json.Obj(full*)
 
   // The `kiro-cli chat` argument vector. Pure for unit testing.
-  def cliArgs(prompt: String, modelId: String): List[String] =
-    val modelArgs = effectiveModel(modelId).toList.flatMap(m => List("--model", m))
-    List("chat", "--no-interactive", "--trust-all-tools", "--wrap", "never", "--agent", agentName) ++ modelArgs ++ List(prompt)
+  // `--require-mcp-startup` (only when the arm exposes MCP servers) makes chat
+  // exit non-zero if a server fails to connect, before any paid model call.
+  def cliArgs(prompt: String, modelId: String, requireMcpStartup: Boolean): List[String] =
+    val modelArgs   = effectiveModel(modelId).toList.flatMap(m => List("--model", m))
+    val mcpArgs     = if requireMcpStartup then List("--require-mcp-startup") else Nil
+    List("chat", "--no-interactive", "--trust-all-tools", "--wrap", "never") ++ mcpArgs ++ List("--agent", agentName) ++ modelArgs ++ List(prompt)
 
-  private def writeAgentConfig(kiroHome: File, modelId: String, mcpServers: List[McpServerConfig], policy: AgentPolicy): Task[Unit] =
+  private def writeAgentConfig(cwd: File, modelId: String, mcpServers: List[McpServerConfig], policy: AgentPolicy): Task[Unit] =
     ZIO.attempt {
-      // A workspace-local agent under cwd/.kiro/agents takes precedence; we
-      // isolate via a temp cwd (KIRO_HOME points elsewhere so global agents
-      // don't collide).
-      val agentsDir = File(kiroHome, "agents")
+      // A workspace-local agent under cwd/.kiro/agents takes precedence over the
+      // user's global agents, so we isolate the arm here WITHOUT relocating
+      // `KIRO_HOME` (which would also move kiro-cli's stored credentials).
+      val agentsDir = File(cwd, ".kiro/agents")
       agentsDir.mkdirs()
       Files.writeString(File(agentsDir, s"$agentName.json").toPath, agentConfig(modelId, mcpServers, policy).toJson)
       ()
@@ -85,15 +96,18 @@ final class KiroCliAgentLoop(
     ZIO.scoped {
       for
         cwd      <- ZIO.acquireRelease(ZIO.attempt(Files.createTempDirectory("kiro-eval").toFile))(dir => ZIO.attempt(deleteRecursively(dir)).ignoreLogged)
-        kiroHome  = File(cwd, ".kiro")
-        _        <- ZIO.attempt(kiroHome.mkdirs())
-        _        <- writeAgentConfig(kiroHome, modelId, mcpServers, policy)
-        args      = cliArgs(prompt, modelId)
+        _        <- writeAgentConfig(cwd, modelId, mcpServers, policy)
+        args      = cliArgs(prompt, modelId, requireMcpStartup = mcpServers.nonEmpty)
         _        <- ZIO.logInfo(s"kiro-cli request [$label] (timeout=$runTimeout): kiro-cli ${args.mkString(" ")}")
         start    <- Clock.nanoTime
+        // Keep the REAL environment (so `~/.kiro` credentials authenticate);
+        // merge stderr into stdout and feed empty stdin so headless mode can't
+        // block waiting for input. `KIRO_LOG_NO_COLOR` keeps the captured text clean.
         stdout   <- Command("kiro-cli", args*)
                       .workingDirectory(cwd)
-                      .env(Map("KIRO_HOME" -> kiroHome.getAbsolutePath, "KIRO_LOG_NO_COLOR" -> "1"))
+                      .stdin(ProcessInput.fromUTF8String(""))
+                      .redirectErrorStream(true)
+                      .env(Map("KIRO_LOG_NO_COLOR" -> "1"))
                       .string
                       .timeoutFail(RuntimeException(s"kiro-cli chat exceeded $runTimeout"))(runTimeout)
                       .tapErrorCause(c => ZIO.logErrorCause(s"kiro-cli transport/timeout failed [$label]", c))

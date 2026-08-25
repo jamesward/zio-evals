@@ -16,6 +16,7 @@ object KiroCliAgentLoopSpec extends ZIOSpecDefault:
       assertTrue(
         tools.isEmpty,                                    // no web => no builtin tools
         allowed.contains("@toolbook"),
+        cfg.get("includeMcpJson").get.asBoolean.contains(false),
         servers.get("toolbook").get.asObject.get.get("url").get.asString.contains("http://h/x"),
         cfg.get("model").get.asString.contains("model-x"),
       )
@@ -26,19 +27,21 @@ object KiroCliAgentLoopSpec extends ZIOSpecDefault:
       val allowed = cfg.get("allowedTools").get.asArray.get.flatMap(_.asString)
       assertTrue(tools.contains("web_fetch"), allowed.contains("web_fetch"), cfg.get("mcpServers").isEmpty)
     },
-    test("cliArgs uses headless + trust-all + agent + model") {
-      val args = loop.cliArgs("do it", "model-x")
+    test("cliArgs uses headless + trust-all + agent + model, and require-mcp-startup when asked") {
+      val args = loop.cliArgs("do it", "model-x", requireMcpStartup = true)
       assertTrue(
         args.head == "chat",
         args.contains("--no-interactive"),
         args.contains("--trust-all-tools"),
+        args.contains("--require-mcp-startup"),
         args.contains("--agent") && args(args.indexOf("--agent") + 1) == "eval",
         args.contains("--model") && args(args.indexOf("--model") + 1) == "model-x",
         args.last == "do it",
       )
     },
-    test("cliArgs omits --model when no model resolved") {
-      assertTrue(!KiroCliAgentLoop().cliArgs("q", "").contains("--model"))
+    test("cliArgs omits --require-mcp-startup and --model when not needed") {
+      val args = KiroCliAgentLoop().cliArgs("q", "", requireMcpStartup = false)
+      assertTrue(!args.contains("--require-mcp-startup"), !args.contains("--model"))
     },
     test("modelOverride wins over run model id") {
       val cfg = KiroCliAgentLoop(modelOverride = Some("pinned")).agentConfig("ignored", Nil, AgentPolicy.default).asObject.get

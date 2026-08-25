@@ -32,8 +32,6 @@ libraryDependencies ++= Seq(
 
 fork := true
 
-testFrameworks += TestFramework("zio.test.sbt.ZTestFramework")
-
 javaOptions ++= Seq(
   "-Djava.net.preferIPv4Stack=true",
   // JDK 25: suppress sun.misc.Unsafe / restricted-method warnings emitted by
