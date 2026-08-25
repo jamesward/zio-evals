@@ -3,25 +3,20 @@ package cli
 
 import zio.json.EncoderOps
 import zio.json.ast.Json
+import zio.schema.*
+import zio.schema.annotation.{directDynamicMapping, fieldName}
 
-// Parser for `claude -p --output-format stream-json --verbose` output, which is
-// line-delimited JSON (one JSON object per line). Pure + unit-testable (no CLI,
-// no tokens) — feed it captured stdout, assert the transcript events and the
-// final-result metrics.
-//
-// The shapes mirror the Anthropic Messages content-block model the CLI emits:
-//   {"type":"system","subtype":"init", ...}
-//   {"type":"assistant","message":{"content":[ <blocks> ]}, ...}
-//   {"type":"user","message":{"content":[ {"type":"tool_result", ...} ]}, ...}
-//   {"type":"result","subtype":"success","result":"...","num_turns":N,
-//      "duration_ms":N,"is_error":false,"usage":{"input_tokens":N,"output_tokens":N}}
-// Content blocks mapped: text, thinking, tool_use (incl. server_tool_use),
-// tool_result, web_search_tool_result. Unknown lines/blocks are ignored (the
-// stream carries observability noise we don't model), EXCEPT a `result` line
-// with `is_error` or `subtype != "success"`, surfaced as a failure.
+// Typed parser for `claude -p --output-format stream-json --verbose` JSONL.
+// Known protocol envelopes/blocks are Schema-derived records; arbitrary tool
+// payloads/results use Schema `DynamicValue` with direct JSON mapping. `Json`
+// remains only at the public structured-output boundary required by AgentLoop.
 object ClaudeStreamJson:
 
-  // The final-turn metrics extracted from the `result` line.
+  // Arbitrary tool payload/result/structured-output JSON, encoded and decoded
+  // as natural JSON instead of the `DynamicValue` ADT representation.
+  private given rawJsonSchema: Schema[DynamicValue] =
+    Schema.dynamicValue.annotate(directDynamicMapping())
+
   final case class FinalResult(
       result:           String,
       numTurns:         Int,
@@ -31,111 +26,108 @@ object ClaudeStreamJson:
       totalCostUsd:     Double,
       isError:          Boolean,
       errorDetail:      Option[String],
-      structuredOutput: Option[Json], // the `--json-schema` validated output, when requested
+      structuredOutput: Option[Json],
   )
 
-  // Parsed stdout: the ordered transcript events plus the final result. The
-  // `result` line is required (it's how the CLI signals completion); its
-  // absence is itself an error the caller surfaces.
   final case class Parsed(events: List[TranscriptEvent], finalResult: Option[FinalResult])
 
-  private def str(o: Json.Obj, k: String): Option[String] =
-    o.get(k).flatMap(_.asString)
+  private final case class WireUsage(
+      @fieldName("input_tokens") inputTokens:                         Option[Long],
+      @fieldName("cache_read_input_tokens") cacheReadInputTokens:     Option[Long],
+      @fieldName("cache_creation_input_tokens") cacheCreatedTokens:   Option[Long],
+      @fieldName("output_tokens") outputTokens:                       Option[Long],
+  ) derives Schema
 
-  private def num(o: Json.Obj, k: String): Option[Long] =
-    o.get(k).flatMap(_.asNumber).map(_.value.longValue)
+  private final case class WireBlock(
+      @fieldName("type") kind:       String,
+      text:                          Option[String],
+      thinking:                      Option[String],
+      name:                          Option[String],
+      input:                         Option[DynamicValue],
+      content:                       Option[DynamicValue],
+      @fieldName("is_error") isError: Option[Boolean],
+  ) derives Schema
 
-  private def dbl(o: Json.Obj, k: String): Option[Double] =
-    o.get(k).flatMap(_.asNumber).map(_.value.doubleValue)
+  private final case class WireMessage(
+      content: List[WireBlock]
+  ) derives Schema
 
-  // tool_result `content` is either a plain string or an array of blocks
-  // (each typically a `{"type":"text","text":...}` or a structured reference).
-  // Flatten to readable text either way.
-  private def renderContent(j: Json): String =
-    j.asString match
-      case Some(s) => s
-      case None =>
-        j.asArray match
-          case Some(blocks) =>
-            blocks.toList.flatMap { b =>
-              b.asObject.flatMap(o => str(o, "text")).orElse(Some(b.toJson))
-            }.mkString("\n")
-          case None => j.toJson
+  private final case class WireLine(
+      @fieldName("type") kind:                         String,
+      subtype:                                         Option[String],
+      message:                                         Option[WireMessage],
+      result:                                          Option[String],
+      @fieldName("num_turns") numTurns:                Option[Int],
+      @fieldName("duration_ms") durationMs:             Option[Long],
+      @fieldName("is_error") isError:                  Option[Boolean],
+      usage:                                            Option[WireUsage],
+      @fieldName("total_cost_usd") totalCostUsd:        Option[Double],
+      @fieldName("structured_output") structuredOutput: Option[DynamicValue],
+  ) derives Schema
 
-  private def blockEvents(content: Json): List[TranscriptEvent] =
-    content.asArray match
-      case None => content.asString.toList.map(TranscriptEvent.AgentMessage.apply)
-      case Some(blocks) =>
-        blocks.toList.flatMap { b =>
-          b.asObject match
-            case None => Nil
-            case Some(o) =>
-              str(o, "type") match
-                case Some("text") =>
-                  str(o, "text").filter(_.nonEmpty).map(TranscriptEvent.AgentMessage.apply).toList
-                case Some("thinking") =>
-                  str(o, "thinking").filter(_.nonEmpty).map(TranscriptEvent.Thinking.apply).toList
-                case Some("redacted_thinking") =>
-                  List(TranscriptEvent.Thinking("(redacted)"))
-                case Some("tool_use") | Some("server_tool_use") | Some("mcp_tool_use") =>
-                  val name  = str(o, "name").getOrElse("(tool)")
-                  val input = o.get("input").map(_.toJson).getOrElse("{}")
-                  List(TranscriptEvent.ToolCall(name, input))
-                case Some("tool_result") | Some("web_search_tool_result") =>
-                  val text    = o.get("content").map(renderContent).getOrElse("")
-                  val isError = o.get("is_error").flatMap(_.asBoolean).getOrElse(false)
-                  // The CLI's tool_result block doesn't echo the tool name; the
-                  // preceding ToolCall already names it, so leave it generic.
-                  List(TranscriptEvent.ToolResult("(result)", text, isError))
-                case _ => Nil
-        }
+  private def rawJson(value: DynamicValue): String =
+    EvalCodecs.encode(value)
 
-  private def lineEvents(o: Json.Obj): List[TranscriptEvent] =
-    str(o, "type") match
-      case Some("assistant") | Some("user") =>
-        o.get("message").flatMap(_.asObject).flatMap(_.get("content"))
-          .map(blockEvents).getOrElse(Nil)
+  private def renderContent(value: DynamicValue): String =
+    value match
+      case DynamicValue.Primitive(text: String, _) => text
+      case DynamicValue.Sequence(values) =>
+        values.toList.map {
+          case record @ DynamicValue.Record(_, fields) =>
+            fields.collectFirst {
+              case ("text", DynamicValue.Primitive(text: String, _)) => text
+            }.getOrElse(rawJson(record))
+          case other => rawJson(other)
+        }.mkString("\n")
+      case other => rawJson(other)
+
+  private def blockEvent(block: WireBlock): List[TranscriptEvent] =
+    block.kind match
+      case "text" =>
+        block.text.filter(_.nonEmpty).map(TranscriptEvent.AgentMessage.apply).toList
+      case "thinking" =>
+        block.thinking.filter(_.nonEmpty).map(TranscriptEvent.Thinking.apply).toList
+      case "redacted_thinking" =>
+        List(TranscriptEvent.Thinking("(redacted)"))
+      case "tool_use" | "server_tool_use" | "mcp_tool_use" =>
+        List(TranscriptEvent.ToolCall(block.name.getOrElse("(tool)"), block.input.map(rawJson).getOrElse("{}")))
+      case "tool_result" | "web_search_tool_result" =>
+        List(TranscriptEvent.ToolResult("(result)", block.content.map(renderContent).getOrElse(""), block.isError.contains(true)))
       case _ => Nil
 
-  private def parseFinal(o: Json.Obj): FinalResult =
-    val usage   = o.get("usage").flatMap(_.asObject)
-    def u(k: String): Long = usage.flatMap(usg => num(usg, k)).getOrElse(0L)
-    // The result-line `usage.input_tokens` is only the UNCACHED delta; the bulk
-    // of the input the model processed is in the cache-read / cache-creation
-    // counters. Sum all three for real input-token throughput. `output_tokens`
-    // is already the run aggregate.
-    val inTok   = u("input_tokens") + u("cache_read_input_tokens") + u("cache_creation_input_tokens")
-    val outTok  = u("output_tokens")
-    val isError = o.get("is_error").flatMap(_.asBoolean).getOrElse(false)
-    val subtype = str(o, "subtype")
+  private def lineEvents(line: WireLine): List[TranscriptEvent] =
+    line.kind match
+      case "assistant" | "user" => line.message.toList.flatMap(_.content.flatMap(blockEvent))
+      case _                      => Nil
+
+  private def finalResult(line: WireLine): FinalResult =
+    val usage = line.usage
+    val input = usage.flatMap(_.inputTokens).getOrElse(0L) +
+      usage.flatMap(_.cacheReadInputTokens).getOrElse(0L) +
+      usage.flatMap(_.cacheCreatedTokens).getOrElse(0L)
+    val rawError = line.isError.contains(true)
+    val failed   = rawError || line.subtype.exists(_ != "success")
     FinalResult(
-      result       = str(o, "result").getOrElse(""),
-      numTurns     = num(o, "num_turns").map(_.toInt).getOrElse(0),
-      durationMs   = num(o, "duration_ms").getOrElse(0L),
-      inputTokens  = inTok,
-      outputTokens = outTok,
-      totalCostUsd = dbl(o, "total_cost_usd").getOrElse(0.0),
-      isError      = isError || subtype.exists(_ != "success"),
-      errorDetail  = if isError then str(o, "result").orElse(str(o, "subtype")) else None,
-      structuredOutput = o.get("structured_output").collect { case obj: Json.Obj => obj },
+      result           = line.result.getOrElse(""),
+      numTurns         = line.numTurns.getOrElse(0),
+      durationMs       = line.durationMs.getOrElse(0L),
+      inputTokens      = input,
+      outputTokens     = usage.flatMap(_.outputTokens).getOrElse(0L),
+      totalCostUsd     = line.totalCostUsd.getOrElse(0.0),
+      isError          = failed,
+      errorDetail      = if failed then line.result.orElse(line.subtype) else None,
+      structuredOutput = line.structuredOutput
+                           .flatMap(value => Json.decoder.decodeJson(rawJson(value)).toOption)
+                           .collect { case obj: Json.Obj => obj },
     )
 
-  // Parse the full JSONL stdout. Lines that aren't valid JSON objects are
-  // skipped (the CLI occasionally interleaves non-JSON on stdout under load);
-  // the `result` line is the authoritative completion signal.
   def parse(stdout: String): Parsed =
-    val objs =
-      stdout.linesIterator
-        .map(_.trim)
-        .filter(_.nonEmpty)
-        .flatMap(l => l.fromJsonObj)
-        .toList
-    val events = objs.flatMap(lineEvents)
-    val finalR = objs.reverse.collectFirst {
-      case o if str(o, "type").contains("result") => parseFinal(o)
-    }
-    Parsed(events, finalR)
-
-  extension (s: String)
-    private def fromJsonObj: Option[Json.Obj] =
-      Json.decoder.decodeJson(s).toOption.flatMap(_.asObject)
+    val lines = stdout.linesIterator
+      .map(_.trim)
+      .filter(_.nonEmpty)
+      .flatMap(line => EvalCodecs.decode[WireLine](line).toOption)
+      .toList
+    Parsed(
+      events      = lines.flatMap(lineEvents),
+      finalResult = lines.reverse.collectFirst { case line if line.kind == "result" => finalResult(line) },
+    )

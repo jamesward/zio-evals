@@ -1,5 +1,6 @@
 package com.jamesward.zio_evals
 
+import zio.json.EncoderOps
 import zio.test.*
 
 object EvalJudgingSpec extends ZIOSpecDefault:
@@ -39,5 +40,26 @@ object EvalJudgingSpec extends ZIOSpecDefault:
     },
     test("sliceJson extracts the JSON object from prose") {
       assertTrue(EvalJudging.sliceJson("""noise {"a":1} tail""") == """{"a":1}""")
+    },
+    test("judge wire records round-trip through their derived Schema") {
+      val grades = EvalJudging.JudgeGrades(List(
+        EvalJudging.JudgeGrade(1, EvalJudging.JudgeVerdict.Pass, "ok"),
+        EvalJudging.JudgeGrade(2, EvalJudging.JudgeVerdict.Fail, "no"),
+      ))
+      val encoded = EvalCodecs.encode(grades)
+      val decoded = EvalCodecs.decode[EvalJudging.JudgeGrades](encoded)
+      assertTrue(decoded.isRight, EvalJudging.parseJudge(encoded, 2).map(_._1) == List(EvalVerdict.Pass, EvalVerdict.Fail))
+    },
+    test("Schema-derived judge JSON Schema makes root and item objects strict") {
+      val rendered = EvalJudging.judgeSchema.toJson
+      val strictObjectCount = rendered.sliding("\"additionalProperties\":false".length).count(_ == "\"additionalProperties\":false")
+      assertTrue(
+        rendered.contains("\"grades\""),
+        rendered.contains("\"arm\""),
+        rendered.contains("\"verdict\""),
+        strictObjectCount >= 2,
+        !rendered.contains("minItems"),
+        !rendered.contains("maxItems"),
+      )
     },
   )

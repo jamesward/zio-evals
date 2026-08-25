@@ -42,7 +42,7 @@ object Checks:
       case EvalCheck.CommandOutputMatches(command, regex) =>
         ws.run(command, timeout).map(r => Some(compile(regex).exists(_.findFirstIn(r.stdout).isDefined)))
       case EvalCheck.FileExists(path) =>
-        ws.readFile(path).as(Some(true)).catchAll(_ => ZIO.succeed(Some(false)))
+        ws.readFile(path).as(Some(true)).catchAll(_ => ZIO.some(false))
       case _ => ZIO.none
 
   // Evaluate every check and AND the results. `workspace` is required for the

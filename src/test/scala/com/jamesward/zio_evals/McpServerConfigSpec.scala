@@ -1,33 +1,32 @@
 package com.jamesward.zio_evals
 
-import zio.json.ast.Json
 import zio.test.*
 
 object McpServerConfigSpec extends ZIOSpecDefault:
 
   def spec = suite("McpServerConfig")(
-    test("claudeMcpConfigJson renders http servers, omitting empty headers") {
-      val json = McpServerConfig.claudeMcpConfigJson(List(McpServerConfig("toolbook", "http://localhost:8080/x")))
-      val parsed = Json.decoder.decodeJson(json).toOption.get
-      val server = parsed.asObject.get.get("mcpServers").get.asObject.get.get("toolbook").get.asObject.get
+    test("Claude config is a typed HTTP server config") {
+      val cfg = McpServerConfig.claudeMcpConfig(List(McpServerConfig("toolbook", "http://localhost:8080/x")))
+      val server = cfg.mcpServers("toolbook")
       assertTrue(
-        server.get("type").get.asString.contains("http"),
-        server.get("url").get.asString.contains("http://localhost:8080/x"),
-        server.get("headers").isEmpty,
+        server.transport == "http",
+        server.url == "http://localhost:8080/x",
+        server.headers.isEmpty,
       )
     },
-    test("claudeMcpConfigJson includes headers when present") {
-      val json = McpServerConfig.claudeMcpConfigJson(List(McpServerConfig("tb", "http://h/x", Map("Authorization" -> "Bearer t"))))
-      val server = Json.decoder.decodeJson(json).toOption.get.asObject.get
-        .get("mcpServers").get.asObject.get.get("tb").get.asObject.get
-      assertTrue(server.get("headers").get.asObject.get.get("Authorization").get.asString.contains("Bearer t"))
-    },
-    test("kiroAgentMcpJson renders url + headers per server") {
-      val json = McpServerConfig.kiroAgentMcpJson(List(McpServerConfig("tb", "http://h/x", Map("X-Nonce" -> "n"))))
-      val tb = json.asObject.get.get("tb").get.asObject.get
+    test("Claude config schema JSON round-trips headers") {
+      val original = McpServerConfig.claudeMcpConfig(List(McpServerConfig("tb", "http://h/x", Map("Authorization" -> "Bearer t"))))
+      val decoded  = EvalCodecs.decode[McpServerConfig.ClaudeMcpConfig](EvalCodecs.encode(original))
       assertTrue(
-        tb.get("url").get.asString.contains("http://h/x"),
-        tb.get("headers").get.asObject.get.get("X-Nonce").get.asString.contains("n"),
+        decoded.isRight,
+        decoded.toOption.get.mcpServers("tb").headers.get("Authorization").contains("Bearer t"),
+      )
+    },
+    test("Kiro config is a typed url + headers map") {
+      val servers = McpServerConfig.kiroMcpServers(List(McpServerConfig("tb", "http://h/x", Map("X-Nonce" -> "n"))))
+      assertTrue(
+        servers("tb").url == "http://h/x",
+        servers("tb").headers.get("X-Nonce").contains("n"),
       )
     },
   )

@@ -1,7 +1,6 @@
 package com.jamesward.zio_evals
 package cli
 
-import zio.json.ast.Json
 import zio.test.*
 
 object ClaudeCliArgsSpec extends ZIOSpecDefault:
@@ -41,7 +40,7 @@ object ClaudeCliArgsSpec extends ZIOSpecDefault:
       )
     },
     test("judge arm: --json-schema present") {
-      val args = loop.cliArgsFor("q", "m", Nil, AgentPolicy.default, Some(Json.Obj("type" -> Json.Str("object"))))
+      val args = loop.cliArgsFor("q", "m", Nil, AgentPolicy.default, Some(EvalJudging.judgeSchema))
       assertTrue(args.contains("--json-schema"))
     },
     test("modelOverride pins the model regardless of run model id") {

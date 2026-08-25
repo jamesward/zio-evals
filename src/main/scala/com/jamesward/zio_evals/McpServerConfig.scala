@@ -1,17 +1,10 @@
 package com.jamesward.zio_evals
 
-import zio.json.ast.Json
-import zio.json.EncoderOps
 import zio.schema.*
+import zio.schema.annotation.fieldName
 
-// A single MCP server an eval arm exposes to the agent, reached over HTTP. This
-// is the generic replacement for a host-specific "expose exactly this one
-// server" flag: an arm carries a list of these, and the CLI backends render
-// them into whatever config shape their CLI expects.
-//
-// `name` is the server label the agent sees (tool names are namespaced under
-// it, e.g. `mcp__<name>__<tool>` for claude, `@<name>/<tool>` for kiro-cli).
-// `headers` carries auth (a bearer token, a nonce header, …); empty by default.
+// A single MCP server an eval arm exposes to the agent, reached over HTTP.
+// `name` is the server label the agent sees; `headers` carries optional auth.
 final case class McpServerConfig(
     name:    String,
     url:     String,
@@ -21,28 +14,30 @@ final case class McpServerConfig(
 object McpServerConfig:
   given CanEqual[McpServerConfig, McpServerConfig] = CanEqual.derived
 
-  // The `--mcp-config` JSON the `claude` CLI expects:
-  // {"mcpServers":{"<name>":{"type":"http","url":"...","headers":{...}}}}.
-  // Headers are omitted when empty so the common no-auth case stays minimal.
-  def claudeMcpConfigJson(servers: List[McpServerConfig]): String =
-    val entries = servers.map { s =>
-      val base: List[(String, Json)] =
-        List("type" -> Json.Str("http"), "url" -> Json.Str(s.url))
-      val withHeaders =
-        if s.headers.isEmpty then base
-        else base :+ ("headers" -> Json.Obj(s.headers.toList.map((k, v) => k -> Json.Str(v))*))
-      s.name -> Json.Obj(withHeaders*)
-    }
-    Json.Obj("mcpServers" -> Json.Obj(entries*)).toJson
+  // Typed wire records for the two CLI config formats. Encoding is entirely
+  // schema-derived via `EvalCodecs`; there is no hand-built JSON object.
+  final case class ClaudeMcpServer(
+      @fieldName("type") transport: String,
+      url:                           String,
+      headers:                       Map[String, String],
+  ) derives Schema
 
-  // The `mcpServers` object embedded in a kiro-cli agent config
-  // (`.kiro/agents/<name>.json`): remote HTTP servers are `{url, headers?}`.
-  def kiroAgentMcpJson(servers: List[McpServerConfig]): Json =
-    val entries = servers.map { s =>
-      val base: List[(String, Json)] = List("url" -> Json.Str(s.url))
-      val withHeaders =
-        if s.headers.isEmpty then base
-        else base :+ ("headers" -> Json.Obj(s.headers.toList.map((k, v) => k -> Json.Str(v))*))
-      s.name -> Json.Obj(withHeaders*)
-    }
-    Json.Obj(entries*)
+  final case class ClaudeMcpConfig(
+      mcpServers: Map[String, ClaudeMcpServer]
+  ) derives Schema
+
+  final case class KiroMcpServer(
+      url:     String,
+      headers: Map[String, String],
+  ) derives Schema
+
+  def claudeMcpConfig(servers: List[McpServerConfig]): ClaudeMcpConfig =
+    ClaudeMcpConfig(
+      servers.map(s => s.name -> ClaudeMcpServer("http", s.url, s.headers)).toMap
+    )
+
+  def claudeMcpConfigJson(servers: List[McpServerConfig]): String =
+    EvalCodecs.encode(claudeMcpConfig(servers))
+
+  def kiroMcpServers(servers: List[McpServerConfig]): Map[String, KiroMcpServer] =
+    servers.map(s => s.name -> KiroMcpServer(s.url, s.headers)).toMap

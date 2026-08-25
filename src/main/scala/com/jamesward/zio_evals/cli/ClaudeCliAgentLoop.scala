@@ -2,9 +2,11 @@ package com.jamesward.zio_evals
 package cli
 
 import zio.*
-import zio.json.*
+import zio.json.EncoderOps
 import zio.json.ast.Json
 import zio.process.Command
+import zio.schema.*
+import zio.schema.annotation.fieldName
 
 import java.io.File
 import java.nio.file.Files
@@ -174,12 +176,15 @@ object ClaudeCliAgentLoop:
   ): ClaudeCliAgentLoop =
     new ClaudeCliAgentLoop(modelOverride, maxBudgetUsd, runTimeout, allowShell)
 
-  // Credentials that authenticate `claude -p`, in the CLI's precedence order
-  // (ANTHROPIC_API_KEY wins for `-p`).
+  // Environment credentials supported by `claude -p`, in precedence order
+  // (`ANTHROPIC_API_KEY` wins). These are OPTIONAL: current Claude Code also
+  // uses credentials persisted by `claude auth login` (a Claude subscription
+  // or Anthropic Console login) for headless `-p` runs.
   val authEnvVars: List[String] = List("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
 
   private val reauthHint =
-    "Set ANTHROPIC_API_KEY (preferred — Console account) or CLAUDE_CODE_OAUTH_TOKEN (`claude setup-token`)."
+    "Run `claude auth login` (stored Claude subscription/Console login), or set " +
+      "ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN."
 
   // Is the `claude` executable present and runnable? Cheap (`--version`, no
   // tokens, no auth). `false` just means claude isn't a candidate on this box.
@@ -188,43 +193,65 @@ object ClaudeCliAgentLoop:
       .timeoutFail(RuntimeException("`claude --version` timed out"))(10.seconds)
       .isSuccess
 
-  // True iff at least one credential env var is set (non-blank). NOT an auth
-  // check (a present-but-invalid token still returns true); `validate` proves
-  // the credential actually works.
-  val hasCredential: UIO[Boolean] =
-    ZIO.foreach(authEnvVars)(v => zio.System.env(v).orElseSucceed(None))
-      .map(_.exists(_.exists(_.trim.nonEmpty)))
+  private final case class AuthStatus(
+      loggedIn:         Boolean,
+      authMethod:       Option[String],
+      subscriptionType: Option[String],
+  ) derives Schema
 
-  // Which credential env var(s) `-p` will authenticate with (the VALUE is never
-  // logged — only the name).
+  private def environmentAuthSources: UIO[List[String]] =
+    ZIO.foreach(authEnvVars)(v => zio.System.env(v).orElseSucceed(None).map(_.filter(_.trim.nonEmpty).map(_ => v))).map(_.flatten)
+
+  // Free stored-login check. `claude auth status` confirms that the CLI has a
+  // persisted login, but the minimal `validate` inference below remains the
+  // definitive check because a stored token can be expired or otherwise unable
+  // to run inference.
+  private def storedAuthStatus: UIO[Option[AuthStatus]] =
+    Command("claude", "auth", "status", "--json").string
+      .timeoutFail(RuntimeException("`claude auth status` timed out"))(10.seconds)
+      .flatMap(out => ZIO.fromEither(EvalCodecs.decode[AuthStatus](out)))
+      .option
+
+  // True when either an environment credential is present OR `claude auth
+  // login` has persisted a login. This is only a cheap candidate gate;
+  // `validate` proves that inference actually works.
+  val hasCredential: UIO[Boolean] =
+    environmentAuthSources.zipWith(storedAuthStatus) { (env, stored) =>
+      env.nonEmpty || stored.exists(_.loggedIn)
+    }
+
+  // Which credential source `-p` will use (values/PII are never logged).
   private val activeAuthSource: UIO[String] =
-    ZIO.foreach(authEnvVars)(v => zio.System.env(v).orElseSucceed(None).map(_.filter(_.trim.nonEmpty).map(_ => v)))
-      .map(_.flatten match { case Nil => "none"; case vs => vs.mkString("+") })
+    environmentAuthSources.flatMap {
+      case env if env.nonEmpty => ZIO.succeed(env.mkString("+"))
+      case _ =>
+        storedAuthStatus.map {
+          case Some(s) if s.loggedIn =>
+            val method = s.authMethod.filter(_.nonEmpty).getOrElse("stored")
+            val plan   = s.subscriptionType.filter(_.nonEmpty).fold("")(p => s"/$p")
+            s"$method$plan"
+          case _ => "none"
+        }
+    }
 
   private val authCheckTimeout = 60.seconds
 
-  private val requireAuth: Task[Unit] =
-    ZIO.foreach(authEnvVars)(v => zio.System.env(v)).flatMap { values =>
-      ZIO
-        .fail(RuntimeException(s"claude inference requires a credential env var (${authEnvVars.mkString(" or ")}), none set. $reauthHint"))
-        .unless(values.exists(_.exists(_.trim.nonEmpty)))
-        .unit
-    }
+  private final case class AuthProbeResult(
+      @fieldName("is_error") isError: Boolean,
+      result:                         String,
+  ) derives Schema
 
-  private final case class AuthProbeResult(is_error: Boolean, result: String) derives JsonDecoder
-
-  // Does claude actually work for inference? Require a credential, then a
-  // minimal `-p` round-trip to confirm it's valid (the only reliable auth
-  // check). Costs a few tokens. Fails loudly with an actionable message.
+  // Definitive auth/working check: a minimal `-p` round-trip. Do NOT require an
+  // environment variable first — current Claude Code supports stored
+  // `claude auth login` credentials in headless mode. Costs a few tokens.
   val validate: Task[Unit] =
     for
-      _   <- requireAuth
       out <- Command("claude", "-p", "Reply with the single word: ok", "--setting-sources", "", "--strict-mcp-config", "--output-format", "json")
                .string
                .timeoutFail(RuntimeException(s"`claude -p` auth check timed out after $authCheckTimeout"))(authCheckTimeout)
-      res <- ZIO.fromEither(out.fromJson[AuthProbeResult])
+      res <- ZIO.fromEither(EvalCodecs.decode[AuthProbeResult](out))
                .mapError(e => RuntimeException(s"claude -p auth check: could not parse CLI output ($e):\n$out"))
       _   <- ZIO.fail(RuntimeException(s"claude is installed but not working for inference: ${res.result}. $reauthHint"))
-               .when(res.is_error)
+               .when(res.isError)
       _   <- ZIO.logInfo("claude authenticated and working")
     yield ()

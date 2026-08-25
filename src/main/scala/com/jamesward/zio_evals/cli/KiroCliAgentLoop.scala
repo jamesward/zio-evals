@@ -2,13 +2,26 @@ package com.jamesward.zio_evals
 package cli
 
 import zio.*
-import zio.json.EncoderOps
 import zio.json.ast.Json
 import zio.process.{Command, ProcessInput}
+import zio.schema.*
 
 import java.io.File
 import java.nio.file.Files
 
+
+// The workspace-local `.kiro/agents/<name>.json` wire format. Optional model /
+// prompt values and the MCP server map are encoded by the derived `Schema`.
+final case class KiroAgentConfig(
+    name:           String,
+    description:    String,
+    tools:          List[String],
+    allowedTools:   List[String],
+    includeMcpJson: Boolean,
+    model:          Option[String],
+    prompt:         Option[String],
+    mcpServers:     Map[String, McpServerConfig.KiroMcpServer],
+) derives Schema
 // An `AgentLoop` backed by the `kiro-cli chat` CLI in headless mode
 // (`--no-interactive --trust-all-tools`). The MCP servers an arm exposes are
 // surfaced through a throwaway agent config written to `<cwd>/.kiro/agents/
@@ -50,28 +63,22 @@ final class KiroCliAgentLoop(
   private def effectiveModel(modelId: String): Option[String] =
     modelOverride.orElse(Option(modelId).map(_.trim).filter(_.nonEmpty))
 
-  // The agent config JSON written to `<cwd>/.kiro/agents/<agentName>.json`. Pure
-  // so a unit test can assert the MCP wiring + tool restriction without the CLI.
-  // Built-in `tools` is limited to the web tool (only when the arm enables web)
-  // so the agent can't reach the host shell/fs; MCP tools stay available via
-  // `mcpServers` (auto-approved by `--trust-all-tools` + the `@<server>` grant
-  // in `allowedTools`). `includeMcpJson: false` keeps the host's global
-  // `~/.kiro/settings/mcp.json` servers out of the run.
-  def agentConfig(modelId: String, mcpServers: List[McpServerConfig], policy: AgentPolicy): Json =
+  // The typed agent config written to `<cwd>/.kiro/agents/<agentName>.json`.
+  // Pure so tests can assert the MCP wiring + tool restriction without parsing
+  // an untyped JSON AST. `includeMcpJson = false` keeps global MCP servers out.
+  def agentConfig(modelId: String, mcpServers: List[McpServerConfig], policy: AgentPolicy): KiroAgentConfig =
     val webTools     = if policy.web then List("web_fetch") else Nil
     val serverGrants = mcpServers.map(s => s"@${s.name}")
-    val base: List[(String, Json)] =
-      List(
-        "name"           -> Json.Str(agentName),
-        "description"    -> Json.Str("zio-evals arm"),
-        "tools"          -> Json.Arr(webTools.map(Json.Str.apply)*),
-        "allowedTools"   -> Json.Arr((webTools ++ serverGrants).map(Json.Str.apply)*),
-        "includeMcpJson" -> Json.Bool(false),
-      )
-    val withPrompt = systemPrompt.fold(base)(p => base :+ ("prompt" -> Json.Str(p)))
-    val withModel  = effectiveModel(modelId).fold(withPrompt)(m => withPrompt :+ ("model" -> Json.Str(m)))
-    val full       = if mcpServers.isEmpty then withModel else withModel :+ ("mcpServers" -> McpServerConfig.kiroAgentMcpJson(mcpServers))
-    Json.Obj(full*)
+    KiroAgentConfig(
+      name           = agentName,
+      description    = "zio-evals arm",
+      tools          = webTools,
+      allowedTools   = webTools ++ serverGrants,
+      includeMcpJson = false,
+      model          = effectiveModel(modelId),
+      prompt         = systemPrompt,
+      mcpServers     = McpServerConfig.kiroMcpServers(mcpServers),
+    )
 
   // The `kiro-cli chat` argument vector. Pure for unit testing.
   // `--require-mcp-startup` (only when the arm exposes MCP servers) makes chat
@@ -88,7 +95,7 @@ final class KiroCliAgentLoop(
       // `KIRO_HOME` (which would also move kiro-cli's stored credentials).
       val agentsDir = File(cwd, ".kiro/agents")
       agentsDir.mkdirs()
-      Files.writeString(File(agentsDir, s"$agentName.json").toPath, agentConfig(modelId, mcpServers, policy).toJson)
+      Files.writeString(File(agentsDir, s"$agentName.json").toPath, EvalCodecs.encode(agentConfig(modelId, mcpServers, policy)))
       ()
     }
 
