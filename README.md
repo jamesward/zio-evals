@@ -39,12 +39,41 @@ integration tests** (assert on the returned results).
   grades each sample, aggregates into `ArmResult`s, and streams live progress
   through an optional `EvalObserver`. No `DataSource`, no host types.
 
-### Persistence
+### Example
 
-The library never persists anything. A host attaches its own ids/timestamps and
-writes `ArmResult`s (and the `EvalTranscript` in each) via `EvalObserver` hooks
-or from the returned list. `EvalCodecs.encode`/`decode` serialize the transcript
-as JSON via the derived `Schema`.
+Run one task through two arms — the agent alone vs. the agent with an MCP
+server — grade them with a judge, and assert on the results:
+
+```scala
+import com.jamesward.zio_evals.*
+import com.jamesward.zio_evals.cli.KiroCliAgentLoop
+import zio.*
+
+object MyEval extends ZIOAppDefault:
+  val spec = EvalSpec(
+    task     = "What is the capital of France?",
+    criteria = "The answer must name Paris.",
+    checks   = List(EvalCheck.AnswerContains("Paris")),
+  )
+
+  val arms = List(
+    EvalArm.modelOnly(),
+    EvalArm.mcp("atlas", "Agent with Atlas", List(McpServerConfig("atlas", "http://localhost:8080/mcp"))),
+  )
+
+  def run =
+    val agentLoop = KiroCliAgentLoop()
+    val judge     = AgentLoopJudge(agentLoop, judgeModelId = "claude-opus-4.8")
+    for
+      results <- EvalRunner.run(spec, arms, modelIds = List("claude-opus-4.8"), samples = 1, agentLoop, judge)
+      _       <- ZIO.foreachDiscard(results)(r => Console.printLine(s"${r.arm.label}: ${r.verdict} (pass=${r.passRate})"))
+    yield ()
+```
+
+Each `ArmResult` carries the `verdict`, `passRate`, `checksPassed`, averaged
+`metrics`, and the full per-sample transcript — so the same code works as an
+integration test (assert on the list) or inside an app (persist via an
+`EvalObserver`).
 
 ### License
 
