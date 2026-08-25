@@ -72,7 +72,7 @@ final class KiroCliAgentLoop(
     KiroAgentConfig(
       name           = agentName,
       description    = "zio-evals arm",
-      tools          = webTools,
+      tools          = webTools ++ serverGrants,
       allowedTools   = webTools ++ serverGrants,
       includeMcpJson = false,
       model          = effectiveModel(modelId),

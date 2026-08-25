@@ -11,7 +11,7 @@ object KiroCliAgentLoopSpec extends ZIOSpecDefault:
     test("typed agentConfig for mcp arm wires the server and grants it, no web tool") {
       val cfg = loop.agentConfig("model-x", List(McpServerConfig("toolbook", "http://h/x", Map("X-Nonce" -> "n"))), AgentPolicy.default)
       assertTrue(
-        cfg.tools.isEmpty,
+        cfg.tools.contains("@toolbook"),
         cfg.allowedTools.contains("@toolbook"),
         !cfg.includeMcpJson,
         cfg.mcpServers("toolbook").url == "http://h/x",
