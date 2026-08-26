@@ -1,7 +1,7 @@
 zio-evals
 ---------
 
-[![javadocs.dev](https://www.javadocs.dev/com.jamesward/zio-evals_3/badge.svg)](https://www.javadocs.dev/com.jamesward/zio-evals_3/latest)
+[![javadocs.dev](https://www.javadocs.dev/com.jamesward/zio-evals_3/badge.svg?1)](https://www.javadocs.dev/com.jamesward/zio-evals_3/latest)
 
 A ZIO 2 / Scala 3 toolkit for running **agent evals**: give an agent a task,
 run it through several *arms* (different tool loadouts), grade the answers with
