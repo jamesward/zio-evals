@@ -63,4 +63,27 @@ object EvalRunnerSpec extends ZIOSpecDefault:
           r.samples.head.rationale.contains("boom"),
         )
     },
+    test("passes each arm's skills to the skills-aware backend overload") {
+      val zen = AgentSkill("zen-of-james", SkillSource.Classpath("zen/SKILL.md"))
+      val skillAware = new AgentLoop:
+        def run(prompt: String, modelId: String, servers: List[McpServerConfig], policy: AgentPolicy): Task[AgentRunResult] =
+          ZIO.succeed(AgentRunResult("baseline", 1, 0, 0, 0, 1))
+        override def run(prompt: String, modelId: String, servers: List[McpServerConfig], policy: AgentPolicy, skills: AgentSkills): Task[AgentRunResult] =
+          val answer = if skills.values.exists(_.name == "zen-of-james") then "treatment" else "baseline"
+          ZIO.succeed(AgentRunResult(answer, 1, 0, 0, 0, 1))
+        def runStructured(prompt: String, modelId: String, servers: List[McpServerConfig], policy: AgentPolicy, schema: zio.json.ast.Json): Task[String] =
+          val n = math.max(1, "--- Arm ".r.findAllIn(prompt).size)
+          val grades = (1 to n).map(i => s"""{"arm":$i,"verdict":"PASS","rationale":"ok"}""").mkString(",")
+          ZIO.succeed(s"""{"grades":[$grades]}""")
+
+      val skillArms = List(
+        EvalArm.modelOnly("a", "A"),
+        EvalArm.withSkills("b", "B", AgentSkills.explicit(zen)),
+      )
+      for results <- EvalRunner.run(EvalSpec("task", "criteria"), skillArms, List("m"), 1, skillAware, AgentLoopJudge(skillAware, "j"))
+      yield assertTrue(
+        results.find(_.arm.name == "a").get.samples.head.answer == "baseline",
+        results.find(_.arm.name == "b").get.samples.head.answer == "treatment",
+      )
+    },
   )

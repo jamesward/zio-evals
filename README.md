@@ -12,19 +12,27 @@ integration tests** (assert on the returned results).
 ### Core concepts
 
 - **`AgentLoop`** — the provider-agnostic seam: `run` / `runStructured` take a
-  prompt, a model id, a list of `McpServerConfig` to expose, and an
-  `AgentPolicy` (web / tool-search), and return an `AgentRunResult` (answer +
-  efficiency metrics + a `TranscriptEvent` list). Bundled backends:
+  prompt, a model id, a list of `McpServerConfig` to expose, an
+  `AgentPolicy` (web / tool-search), and optionally `AgentSkills`; they return
+  an `AgentRunResult` (answer + efficiency metrics + a `TranscriptEvent` list).
+  Existing custom backends remain compatible for skill-free arms. Bundled backends:
   - **`ClaudeCliAgentLoop`** — the `claude -p` CLI (stream-json parsed for full
     metrics + transcript; MCP via `--mcp-config`).
-  - **`KiroCliAgentLoop`** — the `kiro-cli chat` CLI (headless; MCP via a
-    throwaway agent config). Plain-text output, so metrics are limited to
-    measured latency.
+  - **`KiroCliAgentLoop`** — the `kiro-cli chat` CLI (headless v2
+    `stream-json`; MCP via a throwaway agent config). The final answer is
+    lossless, while metrics are currently limited to measured latency.
   A host can plug in its own backend (e.g. a hosted-agent runner) by
   implementing `AgentLoop`.
 
-- **`EvalArm`** — one configuration under test: which `McpServerConfig`s to
-  expose and the `AgentPolicy`. Helpers: `EvalArm.modelOnly` / `.web` / `.mcp`.
+- **`EvalArm`** — one configuration under test: which `McpServerConfig`s and
+  `AgentSkills` to expose and the `AgentPolicy`. Helpers:
+  `EvalArm.modelOnly` / `.web` / `.mcp` / `.withSkills`.
+
+- **`AgentSkills`** — skills isolated to one arm. `SkillSource.Directory`
+  recursively copies a skill directory; `SkillSource.Classpath` resolves an
+  exact `SKILL.md` resource from a SkillsJar. `Available` activation measures
+  automatic discovery, while `Explicit` invokes the configured skills before
+  the task.
 
 - **`McpServerConfig`** — an MCP server (`name`, `url`, `headers`) reached over
   HTTP; rendered into each CLI's config shape.
@@ -69,6 +77,27 @@ object MyEval extends ZIOAppDefault:
       _       <- ZIO.foreachDiscard(results)(r => Console.printLine(s"${r.arm.label}: ${r.verdict} (pass=${r.passRate})"))
     yield ()
 ```
+
+A skill can be loaded directly from a normal runtime SkillsJar dependency:
+
+```scala
+val zen = AgentSkill(
+  "zen-of-james",
+  SkillSource.Classpath("META-INF/skills/jamesward/skills/zen-of-james/SKILL.md"),
+)
+
+val arms = List(
+  EvalArm.modelOnly("a", "A"),
+  EvalArm.withSkills("b", "B", AgentSkills.explicit(zen)),
+)
+```
+
+Both bundled CLI backends stage skills in a fresh temporary project. Kiro uses
+always-loaded `file://` resources for `Explicit` activation and progressive
+`skill://` resources for `Available`, while disabling inherited default
+resources. Claude uses project-only settings and grants only the configured
+skill names. Baseline and judge calls therefore do not inherit user-global
+skills.
 
 Each `ArmResult` carries the `verdict`, `passRate`, `checksPassed`, averaged
 `metrics`, and the full per-sample transcript — so the same code works as an

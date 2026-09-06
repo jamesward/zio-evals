@@ -38,6 +38,19 @@ object AgentPolicy:
 trait AgentLoop:
   def run(prompt: String, modelId: String, mcpServers: List[McpServerConfig], policy: AgentPolicy): Task[AgentRunResult]
 
+  // Skills-aware overload. Existing third-party AgentLoop implementations stay
+  // source compatible and continue to support skill-free arms; backends that
+  // can isolate and load skills override this method.
+  def run(
+      prompt: String,
+      modelId: String,
+      mcpServers: List[McpServerConfig],
+      policy: AgentPolicy,
+      skills: AgentSkills,
+  ): Task[AgentRunResult] =
+    if skills.isEmpty then run(prompt, modelId, mcpServers, policy)
+    else ZIO.fail(UnsupportedOperationException("this AgentLoop backend does not support agent skills"))
+
   // Like `run`, but constrains the FINAL output to `schema` and returns ONLY
   // that structured JSON text (the judge's use — one structured verdict set
   // over all arms). A backend that can't constrain output should ask for the
@@ -48,6 +61,15 @@ trait AgentLoop:
 object AgentLoop:
   def run(prompt: String, modelId: String, mcpServers: List[McpServerConfig], policy: AgentPolicy): RIO[AgentLoop, AgentRunResult] =
     ZIO.serviceWithZIO[AgentLoop](_.run(prompt, modelId, mcpServers, policy))
+
+  def run(
+      prompt: String,
+      modelId: String,
+      mcpServers: List[McpServerConfig],
+      policy: AgentPolicy,
+      skills: AgentSkills,
+  ): RIO[AgentLoop, AgentRunResult] =
+    ZIO.serviceWithZIO[AgentLoop](_.run(prompt, modelId, mcpServers, policy, skills))
 
   def runStructured(prompt: String, modelId: String, mcpServers: List[McpServerConfig], policy: AgentPolicy, schema: Json): RIO[AgentLoop, String] =
     ZIO.serviceWithZIO[AgentLoop](_.runStructured(prompt, modelId, mcpServers, policy, schema))

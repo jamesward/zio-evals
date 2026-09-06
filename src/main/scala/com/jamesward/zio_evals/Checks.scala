@@ -32,6 +32,9 @@ object Checks:
         Some(result.answer.contains(substring))
       case EvalCheck.AnswerMatches(regex) =>
         Some(compile(regex).exists(_.findFirstIn(result.answer).isDefined))
+      case EvalCheck.AnswerNotMatches(regex) =>
+        // An invalid regex cannot prove absence, so it fails honestly.
+        Some(compile(regex).exists(_.findFirstIn(result.answer).isEmpty))
       case _ => None
 
   // Sandbox checks against a provisioned workspace. `None` for transcript checks.

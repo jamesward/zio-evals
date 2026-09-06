@@ -18,6 +18,7 @@ final case class EvalArm(
     label:      String,
     mcpServers: List[McpServerConfig] = Nil,
     policy:     AgentPolicy = AgentPolicy.default,
+    skills:     AgentSkills = AgentSkills.none,
 ) derives Schema
 
 object EvalArm:
@@ -36,3 +37,8 @@ object EvalArm:
   // help?" arm. `toolSearch` opts into MCP tool-search / deferred loading.
   def mcp(name: String, label: String, servers: List[McpServerConfig], toolSearch: Boolean = false): EvalArm =
     EvalArm(name, label, servers, AgentPolicy(web = false, toolSearch = toolSearch))
+
+
+  // An agent augmented only with the supplied skills (no web or MCP tools).
+  def withSkills(name: String, label: String, skills: AgentSkills): EvalArm =
+    EvalArm(name, label, skills = skills)

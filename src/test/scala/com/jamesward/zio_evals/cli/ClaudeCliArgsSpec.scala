@@ -57,4 +57,17 @@ object ClaudeCliArgsSpec extends ZIOSpecDefault:
         !disallowed.contains("Bash"),
       )
     },
+    test("skills arm loads project settings and grants only the named skill") {
+      val skills = AgentSkills.explicit(AgentSkill("zen-of-james", SkillSource.Classpath("zen/SKILL.md")))
+      val args = loop.cliArgsFor("q", "m", Nil, AgentPolicy.default, skills = skills)
+      val allowed = slice(args, "--allowedTools")
+      val disallowed = slice(args, "--disallowedTools")
+      val settingSources = args(args.indexOf("--setting-sources") + 1)
+      assertTrue(
+        settingSources == "project",
+        allowed.contains("Skill(zen-of-james)"),
+        !disallowed.contains("Skill"),
+        ClaudeCliAgentLoop.webTools.forall(disallowed.contains),
+      )
+    },
   )

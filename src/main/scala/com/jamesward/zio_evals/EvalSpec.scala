@@ -11,6 +11,7 @@ enum EvalCheck derives CanEqual, Schema:
   case ResourceRead(uriPrefix: String)
   case AnswerContains(substring: String)
   case AnswerMatches(regex: String)
+  case AnswerNotMatches(regex: String)
   case CommandSucceeds(command: String)
   case CommandOutputMatches(command: String, regex: String)
   case FileExists(path: String)

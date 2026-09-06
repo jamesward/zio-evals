@@ -17,6 +17,7 @@ object KiroCliAgentLoopSpec extends ZIOSpecDefault:
         cfg.mcpServers("toolbook").url == "http://h/x",
         cfg.mcpServers("toolbook").headers.get("X-Nonce").contains("n"),
         cfg.model.contains("model-x"),
+        cfg.resources.isEmpty,
       )
     },
     test("typed agentConfig for web arm grants web_fetch and has no mcp servers") {
@@ -28,12 +29,13 @@ object KiroCliAgentLoopSpec extends ZIOSpecDefault:
       val decoded = EvalCodecs.decode[KiroAgentConfig](EvalCodecs.encode(cfg))
       assertTrue(decoded.isRight, decoded.toOption.get.name == "eval", decoded.toOption.get.mcpServers.contains("s"))
     },
-    test("cliArgs uses headless + trust-all + agent + model, and require-mcp-startup when asked") {
+    test("cliArgs uses v2 stream-json + agent + model, and require-mcp-startup when asked") {
       val args = loop.cliArgs("do it", "model-x", requireMcpStartup = true)
       assertTrue(
         args.head == "chat",
-        args.contains("--no-interactive"),
-        args.contains("--trust-all-tools"),
+        args.contains("--agent-engine") && args(args.indexOf("--agent-engine") + 1) == "v2",
+        args.contains("--output-format") && args(args.indexOf("--output-format") + 1) == "stream-json",
+        !args.exists(_.startsWith("--trust")),
         args.contains("--require-mcp-startup"),
         args.contains("--agent") && args(args.indexOf("--agent") + 1) == "eval",
         args.contains("--model") && args(args.indexOf("--model") + 1) == "model-x",
@@ -47,5 +49,17 @@ object KiroCliAgentLoopSpec extends ZIOSpecDefault:
     test("modelOverride wins over run model id") {
       val cfg = KiroCliAgentLoop(modelOverride = Some("pinned")).agentConfig("ignored", Nil, AgentPolicy.default)
       assertTrue(cfg.model.contains("pinned"))
+    },
+    test("agent config contains only explicitly supplied skill resources") {
+      val uri = "skill:///tmp/eval/.kiro/skills/zen-of-james/SKILL.md"
+      val cfg = loop.agentConfig("m", Nil, AgentPolicy.default, List(uri))
+      assertTrue(cfg.resources == List(uri), cfg.tools.isEmpty, cfg.mcpServers.isEmpty)
+    },
+    test("explicit skills are file context; available skills remain progressive") {
+      val skill = MaterializedSkill("zen-of-james", java.nio.file.Paths.get("/tmp/zen-of-james"))
+      assertTrue(
+        loop.skillResourceUris(List(skill), SkillActivation.Explicit) == List("file:///tmp/zen-of-james/SKILL.md"),
+        loop.skillResourceUris(List(skill), SkillActivation.Available) == List("skill:///tmp/zen-of-james/SKILL.md"),
+      )
     },
   )

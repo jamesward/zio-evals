@@ -21,6 +21,9 @@ object ChecksSpec extends ZIOSpecDefault:
         Checks.transcriptCheck(EvalCheck.ToolCalled("missing"), res).contains(false),
         Checks.transcriptCheck(EvalCheck.AnswerContains("4"), res).contains(true),
         Checks.transcriptCheck(EvalCheck.AnswerMatches("answer is \\d"), res).contains(true),
+        Checks.transcriptCheck(EvalCheck.AnswerNotMatches("forbidden"), res).contains(true),
+        Checks.transcriptCheck(EvalCheck.AnswerNotMatches("answer"), res).contains(false),
+        Checks.transcriptCheck(EvalCheck.AnswerNotMatches("["), res).contains(false),
         Checks.transcriptCheck(EvalCheck.ResourceRead("skill://"), res).contains(true),
         Checks.transcriptCheck(EvalCheck.CommandSucceeds("ls"), res).isEmpty,
       )

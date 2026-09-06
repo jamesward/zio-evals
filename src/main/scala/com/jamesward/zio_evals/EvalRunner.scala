@@ -109,7 +109,7 @@ object EvalRunner:
   private def runArmSamples(spec: EvalSpec, arm: EvalArm, modelId: String, samples: Int, agentLoop: AgentLoop): Task[List[RawSample]] =
     ZIO.foreach((0 until samples).toList) { _ =>
       agentLoop
-        .run(spec.task, modelId, arm.mcpServers, arm.policy)
+        .run(spec.task, modelId, arm.mcpServers, arm.policy, arm.skills)
         .tapErrorCause(c => ZIO.logErrorCause(s"eval arm '${arm.name}' failed (model=$modelId)", c))
         .fold(
           e => RawSample(AgentRunResult("", 0, 0, 0, 0, 0, List(TranscriptEvent.Note(msg(e)))), Some(msg(e))),
