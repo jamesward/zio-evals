@@ -26,7 +26,7 @@ libraryDependencies ++= Seq(
   // via zio-http's typed OpenAPI JsonSchema model (no hand-built JSON AST).
   "dev.zio" %% "zio-http"              % "3.11.4",
   // The bundled CLI agent backends (claude / kiro-cli) shell out via zio-process.
-  "dev.zio" %% "zio-process"           % "0.8.0",
+  "dev.zio" %% "zio-process"           % "0.8.1",
 
   "dev.zio" %% "zio-test"          % zioVersion % Test,
   "dev.zio" %% "zio-test-sbt"      % zioVersion % Test,
