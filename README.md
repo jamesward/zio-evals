@@ -15,20 +15,26 @@ results).
 
 - **`AgentLoop`** — the provider-agnostic seam: `run` / `runStructured` take a
   prompt, a model id, a list of `McpServerConfig` to expose, an
-  `AgentPolicy` (web / tool-search), and optionally `AgentSkills`; they return
-  an `AgentRunResult` (answer + efficiency metrics + a `TranscriptEvent` list).
-  Existing custom backends remain compatible for skill-free arms. Bundled backends:
+  `AgentPolicy` (web / tool-search), and optionally `AgentSkills` plus a per-run
+  system prompt; they return an `AgentRunResult` (answer + efficiency metrics +
+  a `TranscriptEvent` list). Existing custom backends remain compatible for
+  skill-free, system-prompt-free arms. Bundled backends:
   - **`ClaudeCliAgentLoop`** — the `claude -p` CLI (stream-json parsed for full
-    metrics + transcript; MCP via `--mcp-config`).
+    metrics + transcript; MCP via `--mcp-config`; system prompts via
+    `--append-system-prompt`).
   - **`KiroCliAgentLoop`** — the `kiro-cli chat` CLI (headless v2
-    `stream-json`; MCP via a throwaway agent config). The final answer is
-    lossless, while metrics are currently limited to measured latency.
+    `stream-json`; MCP via a throwaway agent config). Its ACP stream is
+    normalized into message/thinking/tool-call/result transcript events;
+    metrics include provider-reported turn latency (measured wall-time fallback)
+    and captured call count (token/turn counts are unavailable). Parse errors include the effective model and a bounded raw
+    stream snippet.
   A host can plug in its own backend (e.g. a hosted-agent runner) by
   implementing `AgentLoop`.
 
 - **`EvalArm`** — one configuration under test: which `McpServerConfig`s and
-  `AgentSkills` to expose and the `AgentPolicy`. Helpers:
-  `EvalArm.modelOnly` / `.web` / `.mcp` / `.withSkills`.
+  `AgentSkills` to expose, the `AgentPolicy`, and optional `systemPrompt` /
+  `taskOverride` variants. Helpers: `EvalArm.modelOnly` / `.web` / `.mcp` /
+  `.withSkills`.
 
 - **`AgentSkills`** — skills isolated to one arm. `SkillSource.Directory`
   recursively copies a skill directory; `SkillSource.Classpath` resolves an
@@ -113,6 +119,26 @@ val arms = List(
 )
 ```
 
+Prompt/content variants can stay in one cross-arm run and one same-sample judge
+call. `taskOverride` replaces `EvalSpec.task` only for that arm; `systemPrompt`
+is passed separately to supporting backends:
+
+```scala
+val variants = List(
+  EvalArm.modelOnly("control", "Control"),
+  EvalArm.modelOnly(
+    "variant",
+    "Variant document",
+    systemPrompt = Some("Use the document at https://example.test/variant"),
+    taskOverride = Some("Summarize the configured document"),
+  ),
+)
+```
+
+Both bundled CLI backends support per-arm system prompts. Custom `AgentLoop`
+implementations remain source-compatible and need to override the six-argument
+`run` overload only if they support a non-empty per-run system prompt.
+
 Both bundled CLI backends stage skills in a fresh temporary project. Kiro uses
 always-loaded `file://` resources for `Explicit` activation and progressive
 `skill://` resources for `Available`, while disabling inherited default
@@ -124,6 +150,51 @@ Each `ArmResult` carries the `verdict`, `passRate`, `checksPassed`, averaged
 `metrics`, and the full per-sample transcript — so the same code works as an
 integration test (assert on the list) or inside an app (persist via an
 `EvalObserver`).
+
+### Evaluating tool calls
+
+Tool activity is backend-neutral: bundled backends normalize each invocation to
+`TranscriptEvent.ToolCall(name, input)`, where `input` is raw JSON. Access the
+normalized calls through `AgentRunResult.capturedToolCalls`, or evaluate them
+without a judge-side model using deterministic checks:
+
+```scala
+val spec = EvalSpec(
+  task = "Look up ZIO's latest release",
+  criteria = "Report the release accurately.",
+  checks = List(
+    EvalCheck.ToolCalled("search"),
+    EvalCheck.ToolInputContains("search", "ZIO"),
+  ),
+)
+```
+
+`ToolCalled` and `ToolInputContains` accept either the full backend tool name or
+a suffix, so `search` also matches names such as `mcp__atlas__search`. Checks are
+evaluated against every successful sample and contribute to
+`ArmResult.checksPassed`. Custom `AgentLoop` implementations opt in by adding
+`TranscriptEvent.ToolCall` events to their `AgentRunResult`.
+
+Common answer checks avoid regexes for simple predicates:
+
+- `AnswerContains` — case-sensitive single substring.
+- `AnswerContainsIgnoreCase` — case-insensitive single substring.
+- `AnswerContainsAny` — at least one case-sensitive substring; an empty list fails.
+- `AnswerContainsAll` — every case-sensitive substring; an empty list passes.
+- `AnswerMatches` / `AnswerNotMatches` — regex checks; invalid regexes fail.
+
+### EvalCheck applicability
+
+| Check family | Claude CLI | Kiro CLI | Other requirements |
+| --- | --- | --- | --- |
+| `AnswerContains*`, `AnswerMatches`, `AnswerNotMatches` | Yes | Yes | Uses `AgentRunResult.answer`; works for every backend. |
+| `ToolCalled`, `ToolInputContains` | Yes | Yes | A custom backend must emit `TranscriptEvent.ToolCall`. |
+| `ResourceRead` | Yes | Yes | A custom backend must emit tool calls/results containing the resource URI. |
+| `CommandSucceeds`, `CommandOutputMatches`, `FileExists` | Backend-independent | Backend-independent | Requires `Checks.evaluateAll(..., workspace = Some(...))`; `EvalRunner` has no workspace and fails these checks closed. |
+
+Transcript checks are not inferred from the numeric `toolCalls` metric: the
+backend must supply normalized transcript events. Both bundled CLI backends do
+so; unavailable token/turn metrics remain `0` rather than being estimated.
 
 ### License
 

@@ -3,13 +3,20 @@ package com.jamesward.zio_evals
 import zio.schema.*
 
 // A deterministic, model-free assertion about a run. Transcript/answer checks
-// (`ToolCalled`/`ResourceRead`/`AnswerContains`/`AnswerMatches`) run in-process
-// against the `AgentRunResult`; the `Command*`/`FileExists` checks require an
-// execution `Sandbox` and only apply to action-based evals. See `Checks`.
+// run in-process against the `AgentRunResult`; the `Command*`/`FileExists`
+// checks require an execution `Sandbox` and only apply to action-based evals.
+// See `Checks` and the applicability matrix in the README.
 enum EvalCheck derives CanEqual, Schema:
+  // Matches either the full backend name or a suffix (for example `search`
+  // matches Claude's `mcp__atlas__search`).
   case ToolCalled(name: String)
+  // Requires a matching call whose raw JSON input contains `substring`.
+  case ToolInputContains(name: String, substring: String)
   case ResourceRead(uriPrefix: String)
   case AnswerContains(substring: String)
+  case AnswerContainsIgnoreCase(substring: String)
+  case AnswerContainsAny(substrings: List[String])
+  case AnswerContainsAll(substrings: List[String])
   case AnswerMatches(regex: String)
   case AnswerNotMatches(regex: String)
   case CommandSucceeds(command: String)
@@ -19,7 +26,7 @@ enum EvalCheck derives CanEqual, Schema:
 // The model-facing definition of a single eval, independent of any host's
 // persistence. A host maps its own stored eval entity onto this to run it.
 //
-//   * `task`     — the prompt handed to the agent (every arm gets the same one).
+//   * `task`     — the default prompt handed to each arm.
 //   * `criteria` — the rubric the judge scores each arm's answer against.
 //   * `checks`   — deterministic assertions evaluated alongside the judge.
 final case class EvalSpec(

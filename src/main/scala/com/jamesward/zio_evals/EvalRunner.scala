@@ -62,9 +62,11 @@ object EvalObserver:
 // orchestration engine: no DataSource or host types. Injected `AgentLoop`,
 // `Judge`, and `Sandbox` implementations may perform process or network I/O.
 // Suitable both for an app worker (persist via `EvalObserver`) and for an
-// integration test (assert on the returned `ArmResult`s). Deterministic `EvalCheck`s that are transcript/answer-based are
-// enforced here; command/file checks need a `Sandbox` the host wires (see
-// `Checks`), so they are not evaluated by this in-process runner.
+// integration test (assert on the returned `ArmResult`s). This in-process
+// runner evaluates transcript/answer checks directly. Command/file checks have
+// no workspace here and therefore fail `checksPassed` rather than being silently
+// ignored; action-eval hosts can use `Checks.evaluateAll` with a provisioned
+// workspace.
 object EvalRunner:
 
   // One raw sample from an arm before the judge grades it.
@@ -110,7 +112,14 @@ object EvalRunner:
   private def runArmSamples(spec: EvalSpec, arm: EvalArm, modelId: String, samples: Int, agentLoop: AgentLoop): Task[List[RawSample]] =
     ZIO.foreach((0 until samples).toList) { _ =>
       agentLoop
-        .run(spec.task, modelId, arm.mcpServers, arm.policy, arm.skills)
+        .run(
+          arm.effectiveTask(spec.task),
+          modelId,
+          arm.mcpServers,
+          arm.policy,
+          arm.skills,
+          arm.systemPrompt,
+        )
         .tapErrorCause(c => ZIO.logErrorCause(s"eval arm '${arm.name}' failed (model=$modelId)", c))
         .fold(
           e => RawSample(AgentRunResult("", 0, 0, 0, 0, 0, List(TranscriptEvent.Note(msg(e)))), Some(msg(e))),
@@ -151,11 +160,16 @@ object EvalRunner:
       val (v, r) = byArm.lift(i).flatMap(_.get(arm.name)).getOrElse((EvalVerdict.Error, raw.error.getOrElse("")))
       TranscriptSample(arm.name, modelId, raw.result.events, if raw.error.isEmpty then raw.result.answer else "", v, r)
     }
-    val okResults    = raws.filter(_.error.isEmpty).map(_.result)
-    val checksPassed = okResults.nonEmpty && okResults.forall(r => spec.checks.flatMap(c => Checks.transcriptCheck(c, r)).forall(identity))
-    val result = ArmResult(
-      arm, modelId, verdict, passRate,
-      score = if verdict == EvalVerdict.Pass then 1.0 else 0.0,
-      checksPassed, rationale, ArmMetrics.avg(okResults), tsamples,
-    )
-    observer.armCompleted(result).as(result)
+    val okResults = raws.filter(_.error.isEmpty).map(_.result)
+    for
+      checkResults <- ZIO.foreach(okResults)(result =>
+                        Checks.evaluateAll(spec.checks, result).mapError(e => RuntimeException(e.toString))
+                      )
+      checksPassed  = okResults.nonEmpty && checkResults.forall(identity)
+      result = ArmResult(
+        arm, modelId, verdict, passRate,
+        score = if verdict == EvalVerdict.Pass then 1.0 else 0.0,
+        checksPassed, rationale, ArmMetrics.avg(okResults), tsamples,
+      )
+      observed <- observer.armCompleted(result).as(result)
+    yield observed

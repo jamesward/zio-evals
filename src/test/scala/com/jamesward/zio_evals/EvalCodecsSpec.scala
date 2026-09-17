@@ -26,6 +26,16 @@ object EvalCodecsSpec extends ZIOSpecDefault:
       val back = EvalCodecs.decode[EvalArm](EvalCodecs.encode(arm))
       assertTrue(back == Right(arm))
     },
+    test("EvalArm prompt and task overrides round-trip through schema JSON") {
+      val arm = EvalArm.modelOnly(
+        "variant",
+        "Variant",
+        systemPrompt = Some("read https://example.test/doc"),
+        taskOverride = Some("summarize the document"),
+      )
+      val back = EvalCodecs.decode[EvalArm](EvalCodecs.encode(arm))
+      assertTrue(back == Right(arm), arm.effectiveTask("default") == "summarize the document")
+    },
     test("decode of corrupt json is a Left") {
       assertTrue(EvalCodecs.decode[EvalTranscript]("not json").isLeft)
     },

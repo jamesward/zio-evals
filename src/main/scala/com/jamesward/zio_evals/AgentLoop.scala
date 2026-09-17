@@ -3,6 +3,13 @@ package com.jamesward.zio_evals
 import zio.*
 import zio.json.ast.Json
 
+// One normalized tool invocation captured from a backend transcript. `input` is
+// the raw JSON arguments text supplied by that backend.
+final case class CapturedToolCall(name: String, input: String)
+
+object CapturedToolCall:
+  given CanEqual[CapturedToolCall, CapturedToolCall] = CanEqual.derived
+
 // The answer plus the efficiency metrics an eval records per (arm x model):
 // iterations, tool calls, tokens, wall-time. `events` is the full turn-by-turn
 // conversation (agent messages, thinking, tool calls + their results) captured
@@ -16,7 +23,12 @@ final case class AgentRunResult(
     outputTokens: Long,
     latencyMs:    Long,
     events:       List[TranscriptEvent] = Nil,
-)
+):
+  // The normalized calls captured by any backend that emits ToolCall events.
+  // Keeping this derived from `events` makes the transcript the single source
+  // of truth and gives custom backends the same evaluation behavior.
+  def capturedToolCalls: List[CapturedToolCall] =
+    events.collect { case TranscriptEvent.ToolCall(name, input) => CapturedToolCall(name, input) }
 
 // Per-arm controls the runner sets when driving an arm/judge through the seam.
 // `web` gates the agent's built-in web search/fetch tools; `toolSearch` enables
@@ -51,6 +63,21 @@ trait AgentLoop:
     if skills.isEmpty then run(prompt, modelId, mcpServers, policy)
     else ZIO.fail(UnsupportedOperationException("this AgentLoop backend does not support agent skills"))
 
+  // Per-run system-prompt overload used by EvalArm. It defaults through the
+  // existing skills-aware seam, preserving source compatibility for custom
+  // backends. A backend must opt in before accepting a non-empty system prompt.
+  def run(
+      prompt: String,
+      modelId: String,
+      mcpServers: List[McpServerConfig],
+      policy: AgentPolicy,
+      skills: AgentSkills,
+      systemPrompt: Option[String],
+  ): Task[AgentRunResult] =
+    systemPrompt.filter(_.nonEmpty) match
+      case None    => run(prompt, modelId, mcpServers, policy, skills)
+      case Some(_) => ZIO.fail(UnsupportedOperationException("this AgentLoop backend does not support per-run system prompts"))
+
   // Like `run`, but constrains the FINAL output to `schema` and returns ONLY
   // that structured JSON text (the judge's use — one structured verdict set
   // over all arms). A backend that can't constrain output should ask for the
@@ -70,6 +97,16 @@ object AgentLoop:
       skills: AgentSkills,
   ): RIO[AgentLoop, AgentRunResult] =
     ZIO.serviceWithZIO[AgentLoop](_.run(prompt, modelId, mcpServers, policy, skills))
+
+  def run(
+      prompt: String,
+      modelId: String,
+      mcpServers: List[McpServerConfig],
+      policy: AgentPolicy,
+      skills: AgentSkills,
+      systemPrompt: Option[String],
+  ): RIO[AgentLoop, AgentRunResult] =
+    ZIO.serviceWithZIO[AgentLoop](_.run(prompt, modelId, mcpServers, policy, skills, systemPrompt))
 
   def runStructured(prompt: String, modelId: String, mcpServers: List[McpServerConfig], policy: AgentPolicy, schema: Json): RIO[AgentLoop, String] =
     ZIO.serviceWithZIO[AgentLoop](_.runStructured(prompt, modelId, mcpServers, policy, schema))

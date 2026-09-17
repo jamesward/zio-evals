@@ -34,6 +34,23 @@ object JevJudgeSpec extends ZIOSpecDefault:
         outcome.verdicts(1)._2.contains("0.7000"),
       )
     },
+    test("uses each arm's task and system-prompt context for classification") {
+      val variant = EvalArm.modelOnly(
+        "variant",
+        "Variant",
+        systemPrompt = Some("Use https://example.test/variant"),
+        taskOverride = Some("What is 3 + 3?"),
+      )
+      for
+        seen <- Ref.make(Option.empty[JevJudge.Candidate])
+        judge = JevJudge.fromClassifier(0.5)(candidate => seen.set(Some(candidate)).as(result(1.0)))
+        _ <- judge.judge(spec0, List(variant -> "6"))
+        candidate <- seen.get
+      yield assertTrue(
+        candidate.exists(_.task == "What is 3 + 3?"),
+        candidate.flatMap(_.systemPrompt).contains("Use https://example.test/variant"),
+      )
+    },
     test("maps probabilities below the threshold to Fail and records provider metadata") {
       val judge = JevJudge.fromClassifier(0.5)(_ => ZIO.succeed(result(0.49)))
       for outcome <- judge.judge(spec0, List(arms.head -> "5"))

@@ -43,6 +43,21 @@ object ClaudeCliArgsSpec extends ZIOSpecDefault:
       val args = loop.cliArgsFor("q", "m", Nil, AgentPolicy.default, Some(EvalJudging.judgeSchema))
       assertTrue(args.contains("--json-schema"))
     },
+    test("system prompt uses the supported append flag and per-run override wins") {
+      val configured = ClaudeCliAgentLoop(systemPrompt = Some("base instructions"))
+      val baseArgs = configured.cliArgsFor("q", "m", Nil, AgentPolicy.default)
+      val overrideArgs = configured.cliArgsFor(
+        "q",
+        "m",
+        Nil,
+        AgentPolicy.default,
+        systemPromptOverride = Some("arm instructions"),
+      )
+      assertTrue(
+        baseArgs(baseArgs.indexOf("--append-system-prompt") + 1) == "base instructions",
+        overrideArgs(overrideArgs.indexOf("--append-system-prompt") + 1) == "arm instructions",
+      )
+    },
     test("modelOverride pins the model regardless of run model id") {
       val args = ClaudeCliAgentLoop(modelOverride = Some("sonnet")).cliArgsFor("q", "haiku", Nil, AgentPolicy.default)
       assertTrue(args(args.indexOf("--model") + 1) == "sonnet")

@@ -48,17 +48,39 @@ final class KiroCliAgentLoop(
       policy: AgentPolicy,
       skills: AgentSkills,
   ): Task[AgentRunResult] =
-    runInTemp("arm", modelId, mcpServers, policy, skills, prompt).flatMap { (stdout, ms) =>
-      ZIO.fromEither(KiroStreamJson.finalText(stdout)).mapError(RuntimeException(_)).map { answer =>
-        AgentRunResult(answer, iterations = 0, toolCalls = 0, inputTokens = 0, outputTokens = 0, latencyMs = ms, events = List(TranscriptEvent.AgentMessage(answer)))
+    run(prompt, modelId, mcpServers, policy, skills, systemPrompt = None)
+
+  override def run(
+      prompt: String,
+      modelId: String,
+      mcpServers: List[McpServerConfig],
+      policy: AgentPolicy,
+      skills: AgentSkills,
+      systemPrompt: Option[String],
+  ): Task[AgentRunResult] =
+    runInTemp("arm", modelId, mcpServers, policy, skills, prompt, systemPrompt).flatMap { (stdout, ms) =>
+      ZIO.fromEither(KiroCliAgentLoop.parseOutput(stdout, modelForDiagnostics(modelId))).map { parsed =>
+        val calls = parsed.events.count { case TranscriptEvent.ToolCall(_, _) => true; case _ => false }
+        AgentRunResult(
+          parsed.finalText,
+          iterations = 0,
+          toolCalls = calls,
+          inputTokens = 0,
+          outputTokens = 0,
+          latencyMs = parsed.durationMs.getOrElse(ms),
+          events = parsed.events,
+        )
       }
     }
 
   def runStructured(prompt: String, modelId: String, mcpServers: List[McpServerConfig], policy: AgentPolicy, schema: Json): Task[String] =
     // Judges are intentionally skill-free.
-    runInTemp("judge", modelId, mcpServers, policy, AgentSkills.none, prompt).flatMap { (stdout, _) =>
-      ZIO.fromEither(KiroStreamJson.finalText(stdout)).mapError(RuntimeException(_)).map(EvalJudging.sliceJson)
+    runInTemp("judge", modelId, mcpServers, policy, AgentSkills.none, prompt, systemPrompt = None).flatMap { (stdout, _) =>
+      ZIO.fromEither(KiroCliAgentLoop.parseOutput(stdout, modelForDiagnostics(modelId))).map(parsed => EvalJudging.sliceJson(parsed.finalText))
     }
+
+  private def modelForDiagnostics(modelId: String): String =
+    effectiveModel(modelId).getOrElse("(kiro default)")
 
   private def effectiveModel(modelId: String): Option[String] =
     modelOverride.orElse(Option(modelId).map(_.trim).filter(_.nonEmpty))
@@ -69,6 +91,7 @@ final class KiroCliAgentLoop(
       mcpServers: List[McpServerConfig],
       policy: AgentPolicy,
       resources: List[String] = Nil,
+      systemPromptOverride: Option[String] = None,
   ): KiroAgentConfig =
     val webTools     = if policy.web then List("web_fetch") else Nil
     val serverGrants = mcpServers.map(s => s"@${s.name}")
@@ -80,7 +103,7 @@ final class KiroCliAgentLoop(
       resources      = resources,
       includeMcpJson = false,
       model          = effectiveModel(modelId),
-      prompt         = systemPrompt,
+      prompt         = systemPromptOverride.filter(_.nonEmpty).orElse(systemPrompt),
       mcpServers     = McpServerConfig.kiroMcpServers(mcpServers),
     )
 
@@ -115,11 +138,15 @@ final class KiroCliAgentLoop(
       mcpServers: List[McpServerConfig],
       policy: AgentPolicy,
       resources: List[String],
+      systemPromptOverride: Option[String],
   ): Task[Unit] =
     ZIO.attemptBlocking {
       val agentsDir = File(cwd, ".kiro/agents")
       agentsDir.mkdirs()
-      Files.writeString(File(agentsDir, s"$agentName.json").toPath, EvalCodecs.encode(agentConfig(modelId, mcpServers, policy, resources)))
+      Files.writeString(
+        File(agentsDir, s"$agentName.json").toPath,
+        EvalCodecs.encode(agentConfig(modelId, mcpServers, policy, resources, systemPromptOverride)),
+      )
       ()
     }
 
@@ -130,6 +157,7 @@ final class KiroCliAgentLoop(
       policy: AgentPolicy,
       skills: AgentSkills,
       prompt: String,
+      systemPrompt: Option[String],
   ): Task[(String, Long)] =
     ZIO.scoped {
       for
@@ -137,7 +165,7 @@ final class KiroCliAgentLoop(
         materialized <- SkillMaterializer.materialize(skills, File(cwd, ".kiro/skills").toPath)
         resources = skillResourceUris(materialized, skills.activation)
         _ <- writeWorkspaceIsolation(cwd)
-        _ <- writeAgentConfig(cwd, modelId, mcpServers, policy, resources)
+        _ <- writeAgentConfig(cwd, modelId, mcpServers, policy, resources, systemPrompt)
         args = cliArgs(prompt, modelId, requireMcpStartup = mcpServers.nonEmpty)
         _ <- ZIO.logInfo(s"kiro-cli request [$label] (timeout=$runTimeout): kiro-cli ${args.mkString(" ")}")
         start <- Clock.nanoTime
@@ -160,6 +188,13 @@ final class KiroCliAgentLoop(
     ()
 
 object KiroCliAgentLoop:
+
+  private[cli] def parseOutput(stdout: String, modelId: String): Either[RuntimeException, KiroStreamJson.Parsed] =
+    KiroStreamJson.parse(stdout).left.map { detail =>
+      val trimmed = stdout.trim
+      val snippet = if trimmed.length <= 1000 then trimmed else s"${trimmed.take(1000)}..."
+      RuntimeException(s"kiro-cli failed for model '$modelId': $detail; stream-json snippet: $snippet")
+    }
 
   def apply(
       modelOverride: Option[String] = None,

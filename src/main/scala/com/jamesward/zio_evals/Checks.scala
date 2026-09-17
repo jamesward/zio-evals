@@ -2,6 +2,7 @@ package com.jamesward.zio_evals
 
 import zio.*
 
+import java.util.Locale
 import scala.util.matching.Regex
 import scala.util.Try
 
@@ -18,18 +19,23 @@ object Checks:
   def transcriptCheck(check: EvalCheck, result: AgentRunResult): Option[Boolean] =
     check match
       case EvalCheck.ToolCalled(name) =>
-        Some(result.events.exists {
-          case TranscriptEvent.ToolCall(n, _) => n == name || n.endsWith(name)
-          case _                              => false
-        })
+        Some(result.capturedToolCalls.exists(call => toolNameMatches(call.name, name)))
+      case EvalCheck.ToolInputContains(name, substring) =>
+        Some(result.capturedToolCalls.exists(call => toolNameMatches(call.name, name) && call.input.contains(substring)))
       case EvalCheck.ResourceRead(uriPrefix) =>
         Some(result.events.exists {
-          case TranscriptEvent.ToolCall(_, input)   => input.contains(uriPrefix)
-          case TranscriptEvent.ToolResult(_, t, _)  => t.contains(uriPrefix)
-          case _                                    => false
+          case TranscriptEvent.ToolCall(_, input)  => input.contains(uriPrefix)
+          case TranscriptEvent.ToolResult(_, t, _) => t.contains(uriPrefix)
+          case _                                   => false
         })
       case EvalCheck.AnswerContains(substring) =>
         Some(result.answer.contains(substring))
+      case EvalCheck.AnswerContainsIgnoreCase(substring) =>
+        Some(result.answer.toLowerCase(Locale.ROOT).contains(substring.toLowerCase(Locale.ROOT)))
+      case EvalCheck.AnswerContainsAny(substrings) =>
+        Some(substrings.exists(result.answer.contains))
+      case EvalCheck.AnswerContainsAll(substrings) =>
+        Some(substrings.forall(result.answer.contains))
       case EvalCheck.AnswerMatches(regex) =>
         Some(compile(regex).exists(_.findFirstIn(result.answer).isDefined))
       case EvalCheck.AnswerNotMatches(regex) =>
@@ -69,3 +75,6 @@ object Checks:
 
   private def compile(regex: String): Option[Regex] =
     Try(regex.r).toOption
+
+  private def toolNameMatches(actual: String, expected: String): Boolean =
+    actual == expected || actual.endsWith(expected)

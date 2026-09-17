@@ -31,8 +31,7 @@ final class AgentLoopJudge(
     if answers.isEmpty then ZIO.succeed(JudgeOutcome(Nil, Nil))
     else
       val n      = answers.size
-      val labels = answers.map((arm, ans) => arm.label -> ans)
-      val prompt = s"${EvalJudging.judgeSystem}\n\n${EvalJudging.judgePrompt(spec, labels)}"
+      val prompt = s"${EvalJudging.judgeSystem}\n\n${EvalJudging.judgePromptForArms(spec, answers)}"
       val once: Task[(List[(EvalVerdict, String)], String)] =
         agentLoop.runStructured(prompt, judgeModelId, judgeServers, policy, EvalJudging.judgeSchema)
           .map(text => (EvalJudging.parseJudge(text, n), text))

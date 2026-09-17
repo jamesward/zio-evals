@@ -46,6 +46,29 @@ object KiroCliAgentLoopSpec extends ZIOSpecDefault:
       val args = KiroCliAgentLoop().cliArgs("q", "", requireMcpStartup = false)
       assertTrue(!args.contains("--require-mcp-startup"), !args.contains("--model"))
     },
+    test("per-run system prompt overrides the constructor default") {
+      val configured = KiroCliAgentLoop(systemPrompt = Some("base instructions"))
+      val base = configured.agentConfig("m", Nil, AgentPolicy.default)
+      val overridden = configured.agentConfig(
+        "m",
+        Nil,
+        AgentPolicy.default,
+        systemPromptOverride = Some("arm instructions"),
+      )
+      assertTrue(
+        base.prompt.contains("base instructions"),
+        overridden.prompt.contains("arm instructions"),
+      )
+    },
+    test("runError includes model id and raw stream context") {
+      val stdout = """{"type":"runError","data":{"stage":"engine","message":"Internal error","code":"bad_model"}}"""
+      val error = KiroCliAgentLoop.parseOutput(stdout, "invalid-model").left.toOption.get
+      assertTrue(
+        error.getMessage.contains("invalid-model"),
+        error.getMessage.contains("Internal error"),
+        error.getMessage.contains("bad_model"),
+      )
+    },
     test("modelOverride wins over run model id") {
       val cfg = KiroCliAgentLoop(modelOverride = Some("pinned")).agentConfig("ignored", Nil, AgentPolicy.default)
       assertTrue(cfg.model.contains("pinned"))

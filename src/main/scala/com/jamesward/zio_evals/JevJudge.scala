@@ -26,7 +26,12 @@ final class JevJudge private (
 
   def judge(spec: EvalSpec, answers: List[(EvalArm, String)]): Task[JudgeOutcome] =
     ZIO.foreach(answers.zipWithIndex) { case ((arm, answer), index) =>
-      val candidate = JevJudge.Candidate(spec.task, spec.criteria, answer)
+      val candidate = JevJudge.Candidate(
+        arm.effectiveTask(spec.task),
+        arm.systemPrompt.filter(_.nonEmpty),
+        spec.criteria,
+        answer,
+      )
       classify(candidate).fold(
         error =>
           val message = Option(error.getMessage)
@@ -58,9 +63,10 @@ object JevJudge:
   )
 
   private[zio_evals] final case class Candidate(
-      task:   String,
-      rubric: String,
-      answer: String,
+      task:         String,
+      systemPrompt: Option[String],
+      rubric:       String,
+      answer:       String,
   ) derives Schema
 
   private[zio_evals] final case class Classification(

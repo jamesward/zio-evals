@@ -21,6 +21,7 @@ final class ClaudeCliAgentLoop(
     maxBudgetUsd:  String         = "1.00",
     runTimeout:    Duration       = 120.seconds,
     allowShell:    Boolean        = false,
+    systemPrompt:  Option[String] = None,
 ) extends AgentLoop:
 
   import ClaudeCliAgentLoop.*
@@ -35,7 +36,26 @@ final class ClaudeCliAgentLoop(
       policy: AgentPolicy,
       skills: AgentSkills,
   ): Task[AgentRunResult] =
-    runInTemp("arm", modelId, mcpServers, policy, skills, schema = None, prompt).map { parsed =>
+    run(prompt, modelId, mcpServers, policy, skills, systemPrompt = None)
+
+  override def run(
+      prompt: String,
+      modelId: String,
+      mcpServers: List[McpServerConfig],
+      policy: AgentPolicy,
+      skills: AgentSkills,
+      systemPrompt: Option[String],
+  ): Task[AgentRunResult] =
+    runInTemp(
+      "arm",
+      modelId,
+      mcpServers,
+      policy,
+      skills,
+      schema = None,
+      prompt = prompt,
+      systemPromptOverride = systemPrompt,
+    ).map { parsed =>
       val finalR = parsed.finalResult.get
       AgentRunResult(
         answer       = finalR.result,
@@ -50,7 +70,7 @@ final class ClaudeCliAgentLoop(
 
   def runStructured(prompt: String, modelId: String, mcpServers: List[McpServerConfig], policy: AgentPolicy, schema: Json): Task[String] =
     // Judges are intentionally skill-free.
-    runInTemp("judge", modelId, mcpServers, policy, AgentSkills.none, schema = Some(schema), prompt).map { parsed =>
+    runInTemp("judge", modelId, mcpServers, policy, AgentSkills.none, schema = Some(schema), prompt = prompt, systemPromptOverride = None).map { parsed =>
       parsed.finalResult.flatMap(_.structuredOutput).map(_.toJson)
         .orElse(parsed.finalResult.map(_.result))
         .getOrElse("")
@@ -68,9 +88,11 @@ final class ClaudeCliAgentLoop(
       web: Boolean,
       schema: Option[Json],
       skillNames: List[String] = Nil,
+      systemPrompt: Option[String] = None,
   ): List[String] =
-    val mcpConfigArgs = mcpConfigPath.toList.flatMap(p => List("--mcp-config", p))
-    val schemaArgs    = schema.toList.flatMap(s => List("--json-schema", s.toJson))
+    val mcpConfigArgs  = mcpConfigPath.toList.flatMap(p => List("--mcp-config", p))
+    val schemaArgs     = schema.toList.flatMap(s => List("--json-schema", s.toJson))
+    val systemArgs     = systemPrompt.filter(_.nonEmpty).toList.flatMap(p => List("--append-system-prompt", p))
     val shellTools    = if allowShell then List("Bash") else Nil
     val skillGrants   = skillNames.map(n => s"Skill($n)")
     val allowed       = (if web then webTools else Nil) ++ serverNames.map(n => s"mcp__$n") ++ shellTools ++ skillGrants
@@ -79,7 +101,7 @@ final class ClaudeCliAgentLoop(
     val disallowed    = (disallowedTools ++ (if web then Nil else webTools)).filterNot(permittedAgentic.contains)
     val settingSources = if skillNames.nonEmpty then "project" else ""
     List("-p", prompt, "--setting-sources", settingSources, "--strict-mcp-config", "--output-format", "stream-json", "--verbose", "--max-budget-usd", maxBudgetUsd, "--model", model) ++
-      schemaArgs ++ mcpConfigArgs ++ allowedArgs ++ List("--disallowedTools") ++ disallowed
+      schemaArgs ++ systemArgs ++ mcpConfigArgs ++ allowedArgs ++ List("--disallowedTools") ++ disallowed
 
   def cliArgsFor(
       prompt: String,
@@ -88,9 +110,20 @@ final class ClaudeCliAgentLoop(
       policy: AgentPolicy,
       schema: Option[Json] = None,
       skills: AgentSkills = AgentSkills.none,
+      systemPromptOverride: Option[String] = None,
   ): List[String] =
     val path = if mcpServers.isEmpty then None else Some("/tmp/mcp-config.json")
-    cliArgs(prompt, effectiveModel(modelId), path, mcpServers.map(_.name), policy.web, schema, skills.values.map(_.name))
+    val effectiveSystemPrompt = systemPromptOverride.filter(_.nonEmpty).orElse(systemPrompt)
+    cliArgs(
+      prompt,
+      effectiveModel(modelId),
+      path,
+      mcpServers.map(_.name),
+      policy.web,
+      schema,
+      skills.values.map(_.name),
+      effectiveSystemPrompt,
+    )
 
   private def writeMcpConfig(dir: File, servers: List[McpServerConfig]): Task[File] =
     ZIO.attempt {
@@ -134,6 +167,7 @@ final class ClaudeCliAgentLoop(
       skills: AgentSkills,
       schema: Option[Json],
       prompt: String,
+      systemPromptOverride: Option[String],
   ): Task[ClaudeStreamJson.Parsed] =
     ZIO.scoped {
       for
@@ -143,7 +177,17 @@ final class ClaudeCliAgentLoop(
         _ <- SkillMaterializer.materialize(skills, File(cwd, ".claude/skills").toPath)
         mcpConfigPath <- if mcpServers.isEmpty then ZIO.none else writeMcpConfig(cwd, mcpServers).map(f => Some(f.getAbsolutePath))
         effectivePrompt = skills.augmentPrompt(prompt)
-        args = cliArgs(effectivePrompt, effectiveModel(modelId), mcpConfigPath, mcpServers.map(_.name), policy.web, schema, skills.values.map(_.name))
+        effectiveSystemPrompt = systemPromptOverride.filter(_.nonEmpty).orElse(systemPrompt)
+        args = cliArgs(
+          effectivePrompt,
+          effectiveModel(modelId),
+          mcpConfigPath,
+          mcpServers.map(_.name),
+          policy.web,
+          schema,
+          skills.values.map(_.name),
+          effectiveSystemPrompt,
+        )
         parsed <- runClaudeCli(label, args, cwd, policy.toolSearch)
       yield parsed
     }
@@ -174,8 +218,9 @@ object ClaudeCliAgentLoop:
       maxBudgetUsd: String = "1.00",
       runTimeout: Duration = 120.seconds,
       allowShell: Boolean = false,
+      systemPrompt: Option[String] = None,
   ): ClaudeCliAgentLoop =
-    new ClaudeCliAgentLoop(modelOverride, maxBudgetUsd, runTimeout, allowShell)
+    new ClaudeCliAgentLoop(modelOverride, maxBudgetUsd, runTimeout, allowShell, systemPrompt)
 
   val authEnvVars: List[String] = List("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
 
