@@ -5,9 +5,11 @@ zio-evals
 
 A ZIO 2 / Scala 3 toolkit for running **agent evals**: give an agent a task,
 run it through several *arms* (different tool loadouts), grade the answers with
-a judge, and compare. The engine is persistence-free and HTTP-free, so it works
-both **inside an application** (persist results via an observer) and **as
-integration tests** (assert on the returned results).
+a judge, and compare. The orchestration engine is persistence-free and
+host-agnostic; network and process I/O belong to the selected agent, judge, and
+sandbox implementations. It works both **inside an application** (persist
+results via an observer) and **as integration tests** (assert on the returned
+results).
 
 ### Core concepts
 
@@ -41,7 +43,10 @@ integration tests** (assert on the returned results).
   rubric), and deterministic `EvalCheck`s.
 
 - **`Judge`** — grades all arms' answers together. `AgentLoopJudge` is the
-  bundled default (an `AgentLoop` + the judge's own MCP servers, retry-once).
+  bundled generative default (an `AgentLoop` + the judge's own MCP servers,
+  retry-once). `JevJudge` uses TypeSafe AI's Jev model for typed binary grading:
+  it returns a calibrated pass probability per candidate and applies a
+  configurable threshold.
 
 - **`EvalRunner`** — drives arms × models × samples through the `AgentLoop`,
   grades each sample, aggregates into `ArmResult`s, and streams live progress
@@ -76,6 +81,22 @@ object MyEval extends ZIOAppDefault:
       results <- EvalRunner.run(spec, arms, modelIds = List("claude-opus-4.8"), samples = 1, agentLoop, judge)
       _       <- ZIO.foreachDiscard(results)(r => Console.printLine(s"${r.arm.label}: ${r.verdict} (pass=${r.passRate})"))
     yield ()
+```
+
+To use Jev instead of a generative judge, configure `TYPESAFE_API_KEY` (and,
+optionally, `TYPESAFE_DEFAULT_MODEL`; the default is `jev-latest`) and provide
+TypeSafe AI's HTTP-backed client layer. Jev performs one typed binary
+classification per candidate and includes the calibrated probability in each
+rationale:
+
+```scala
+import com.jamesward.zio_typesafe_ai.TypeSafeAI
+import zio.http.Client
+
+val judged = (for
+  judge   <- JevJudge.make(passThreshold = 0.5)
+  results <- EvalRunner.run(spec, arms, List("claude-opus-4.8"), 1, agentLoop, judge)
+yield results).provide(Client.default, TypeSafeAI.Client.live)
 ```
 
 A skill can be loaded directly from a normal runtime SkillsJar dependency:

@@ -6,9 +6,11 @@ import zio.*
 // transcript events, so a judge cell can show what the judge did.
 final case class JudgeOutcome(verdicts: List[(EvalVerdict, String)], events: List[TranscriptEvent])
 
-// Grades all the given (arm, answer) pairs for one eval against the rubric in a
-// single call. A host can plug in its own judge (e.g. a hosted agent); the
-// bundled default is `AgentLoopJudge`.
+// Grades the given (arm, answer) pairs for one eval against the rubric. A
+// provider may grade all candidates in one request or classify them separately,
+// but verdicts must be returned in input order. A host can plug in its own judge
+// (e.g. a hosted agent); bundled implementations include `AgentLoopJudge` and
+// `JevJudge`.
 trait Judge:
   def judge(spec: EvalSpec, answers: List[(EvalArm, String)]): Task[JudgeOutcome]
 

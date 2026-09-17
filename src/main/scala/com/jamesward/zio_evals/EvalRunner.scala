@@ -58,10 +58,11 @@ object EvalObserver:
   val noop: EvalObserver = new EvalObserver {}
 
 // Drives an eval across arms x models x samples through an `AgentLoop`, grades
-// each sample's arms together with a `Judge`, and aggregates. Pure engine: no
-// DataSource, no HTTP, no host types. Suitable both for an app worker (persist
-// via `EvalObserver`) and for an integration test (assert on the returned
-// `ArmResult`s). Deterministic `EvalCheck`s that are transcript/answer-based are
+// each sample's arms together with a `Judge`, and aggregates. Host-agnostic
+// orchestration engine: no DataSource or host types. Injected `AgentLoop`,
+// `Judge`, and `Sandbox` implementations may perform process or network I/O.
+// Suitable both for an app worker (persist via `EvalObserver`) and for an
+// integration test (assert on the returned `ArmResult`s). Deterministic `EvalCheck`s that are transcript/answer-based are
 // enforced here; command/file checks need a `Sandbox` the host wires (see
 // `Checks`), so they are not evaluated by this in-process runner.
 object EvalRunner:

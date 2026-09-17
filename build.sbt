@@ -10,7 +10,7 @@ scalacOptions ++= Seq(
 )
 
 val zioVersion       = "2.1.26"
-val zioSchemaVersion = "1.8.6"
+val zioSchemaVersion = "1.9.0"
 
 libraryDependencies ++= Seq(
   "dev.zio" %% "zio"                   % zioVersion,
@@ -24,7 +24,9 @@ libraryDependencies ++= Seq(
   "dev.zio" %% "zio-schema-json"       % zioSchemaVersion,
   // Derive provider structured-output JSON Schema documents from `Schema[T]`
   // via zio-http's typed OpenAPI JsonSchema model (no hand-built JSON AST).
-  "dev.zio" %% "zio-http"              % "3.11.5",
+  "dev.zio" %% "zio-http"              % "3.11.6",
+  // Jev / System One typed classification for the bundled JevJudge.
+  "com.jamesward" %% "zio-typesafe-ai" % "0.0.1",
   // The bundled CLI agent backends (claude / kiro-cli) shell out via zio-process.
   "dev.zio" %% "zio-process"           % "0.8.1",
 
