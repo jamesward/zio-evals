@@ -26,7 +26,7 @@ libraryDependencies ++= Seq(
   // via zio-http's typed OpenAPI JsonSchema model (no hand-built JSON AST).
   "dev.zio" %% "zio-http"              % "3.11.6",
   // Jev / System One typed classification for the bundled JevJudge.
-  "com.jamesward" %% "zio-typesafe-ai" % "0.0.1",
+  "com.jamesward" %% "zio-typesafe-ai" % "0.0.2",
   // The bundled CLI agent backends (claude / kiro-cli) shell out via zio-process.
   "dev.zio" %% "zio-process"           % "0.8.1",
 
