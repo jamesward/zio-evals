@@ -196,6 +196,41 @@ Transcript checks are not inferred from the numeric `toolCalls` metric: the
 backend must supply normalized transcript events. Both bundled CLI backends do
 so; unavailable token/turn metrics remain `0` rather than being estimated.
 
+### Evaluating TypeSafeAI orchestration
+
+Because zio-evals depends on zio-typesafe-ai, it can evaluate provider-neutral orchestration runs without depending on Bedrock or an MCP implementation. `OrchestrationLoop` is the host seam, `OrchestrationEvalAdapter` normalizes a run into `AgentRunResult`, and `OrchestrationCheck` provides deterministic checks over the complete `OrchestrationResult`. Runtime selection/classification stays in zio-typesafe-ai; grading whether the resulting answer and committed workflow are good stays here.
+
+Checks cover the selected experiment mode, operations called or omitted, committed Ready filters in both plan and no-plan execution, Jev-only or LLM-only filtering, safe fanout authorization, MCP call/failure bounds, recovery bounds, and replan counts. For example:
+
+```scala
+import com.jamesward.zio_evals.*
+import com.jamesward.zio_typesafe_ai.orchestration.OrchestrationMode
+
+val checks = List(
+  OrchestrationCheck.ModeIs(OrchestrationMode.NoPlan),
+  OrchestrationCheck.FilterBackendOnly(OrchestrationFilterBackend.Jev),
+  OrchestrationCheck.FilterReachedReady,
+  OrchestrationCheck.OperationCalled("get_javadoc_symbol"),
+  OrchestrationCheck.NoUnsafeFanOut,
+  OrchestrationCheck.McpCallsAtMost(12),
+  OrchestrationCheck.McpFailuresEqual(0),
+  OrchestrationCheck.ReplansEqual(0),
+)
+
+val passed = OrchestrationCheck.evaluateAll(checks, result)
+val normalized = OrchestrationEvalAdapter.toAgentRunResult(result)
+```
+
+The normalized `iterations` value is the common Jev logical-turn metric. Input/output tokens combine controller Jev, internal Jev filtering, extraction, LLM-filter fallback, and summary usage without using physical-attempt totals. `toolCalls` is the physical MCP count. Transcript `ToolCall` events represent committed logical workflow operations (one event per call/fanout step, without reconstructing runtime arguments), so their count can intentionally differ from physical calls when fanout or retries occur. The transcript also includes the stable orchestration mode and action trace.
+
+The orchestration API is released in `zio-typesafe-ai` 0.1.0, which is the default pinned dependency:
+
+```bash
+./sbt --server test
+```
+
+For source-level development against `~/projects/zio-typesafe-ai`, add `-Dlocal`; the local source project then replaces the published artifact.
+
 ### License
 
 MIT

@@ -12,6 +12,9 @@ scalacOptions ++= Seq(
 val zioVersion       = "2.1.26"
 val zioSchemaVersion = "1.9.0"
 
+
+val useLocal = sys.props.contains("local")
+val localTypeSafeAICheckout = file(sys.props("user.home")) / "projects" / "zio-typesafe-ai"
 libraryDependencies ++= Seq(
   "dev.zio" %% "zio"                   % zioVersion,
   "dev.zio" %% "zio-concurrent"        % zioVersion,
@@ -25,14 +28,21 @@ libraryDependencies ++= Seq(
   // Derive provider structured-output JSON Schema documents from `Schema[T]`
   // via zio-http's typed OpenAPI JsonSchema model (no hand-built JSON AST).
   "dev.zio" %% "zio-http"              % "3.11.6",
-  // Jev / System One typed classification for the bundled JevJudge.
-  "com.jamesward" %% "zio-typesafe-ai" % "0.0.2",
   // The bundled CLI agent backends (claude / kiro-cli) shell out via zio-process.
   "dev.zio" %% "zio-process"           % "0.8.1",
 
   "dev.zio" %% "zio-test"          % zioVersion % Test,
   "dev.zio" %% "zio-test-sbt"      % zioVersion % Test,
   "dev.zio" %% "zio-test-magnolia" % zioVersion % Test,
+)
+
+libraryDependencies ++= Option.when(!useLocal)("com.jamesward" %% "zio-typesafe-ai" % "0.1.0").toSeq
+
+lazy val root = (project in file(".")).dependsOn(
+  Option.when(useLocal) {
+    require(localTypeSafeAICheckout.exists, s"-Dlocal requires ${localTypeSafeAICheckout.getAbsolutePath}")
+    RootProject(localTypeSafeAICheckout): ClasspathDep[ProjectReference]
+  }.toSeq *
 )
 
 fork := true
