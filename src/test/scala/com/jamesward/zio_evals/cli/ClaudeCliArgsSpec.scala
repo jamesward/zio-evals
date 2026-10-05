@@ -85,4 +85,15 @@ object ClaudeCliArgsSpec extends ZIOSpecDefault:
         ClaudeCliAgentLoop.webTools.forall(disallowed.contains),
       )
     },
+    test("coding policy grants the coding tools, keeps subagents disallowed, and resume is passed") {
+      val args = loop.cliArgs("q", "m", None, Nil, web = false, schema = None, coding = true, resume = Some("sess-1"))
+      val allowed    = slice(args, "--allowedTools")
+      val disallowed = slice(args, "--disallowedTools")
+      assertTrue(
+        ClaudeCliAgentLoop.codingTools.forall(allowed.contains),
+        ClaudeCliAgentLoop.codingTools.forall(t => !disallowed.contains(t)),
+        disallowed.contains("Task"),
+        args(args.indexOf("--resume") + 1) == "sess-1",
+      )
+    },
   )

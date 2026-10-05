@@ -9,6 +9,7 @@ final case class ArmMetrics(
     inputTokens:  Double,
     outputTokens: Double,
     latencyMs:    Double,
+    costUsd:      Double = 0.0,
 )
 
 object ArmMetrics:
@@ -24,6 +25,7 @@ object ArmMetrics:
         m(_.inputTokens.toDouble),
         m(_.outputTokens.toDouble),
         m(_.latencyMs.toDouble),
+        m(_.costUsd),
       )
 
 // The scored outcome of one eval, in one arm, for one model. Samples are

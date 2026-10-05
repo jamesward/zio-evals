@@ -23,6 +23,14 @@ final case class AgentRunResult(
     outputTokens: Long,
     latencyMs:    Long,
     events:       List[TranscriptEvent] = Nil,
+    // Breakdown of `inputTokens` (which already includes both) for backends
+    // that report prompt caching, the backend-reported cost, and the session id
+    // a later `AgentRunRequest.resumeSessionId` can continue. 0 / None when the
+    // backend does not report them.
+    cacheReadTokens:     Long = 0,
+    cacheCreationTokens: Long = 0,
+    costUsd:             Double = 0.0,
+    sessionId:           Option[String] = None,
 ):
   // The normalized calls captured by any backend that emits ToolCall events.
   // Keeping this derived from `events` makes the transcript the single source
@@ -33,13 +41,31 @@ final case class AgentRunResult(
 // Per-arm controls the runner sets when driving an arm/judge through the seam.
 // `web` gates the agent's built-in web search/fetch tools; `toolSearch` enables
 // MCP tool search / deferred loading (the model discovers MCP tools on demand
-// instead of all schemas loading up front). Model selection is the runner's
-// concern (passed to `run` per model id), so it is NOT part of the policy.
-final case class AgentPolicy(web: Boolean = false, toolSearch: Boolean = false)
+// instead of all schemas loading up front); `coding` grants the backend's
+// built-in coding tools (shell, file read/write/edit, search). Grant `coding`
+// only when the agent runs inside a sandboxed workspace. Model selection is the
+// runner's concern (passed to `run` per model id), so it is NOT in the policy.
+final case class AgentPolicy(web: Boolean = false, toolSearch: Boolean = false, coding: Boolean = false)
 
 object AgentPolicy:
   // No web tools, no tool search — the safe baseline. Callers opt in explicitly.
   val default: AgentPolicy = AgentPolicy()
+
+// One agent invocation. `workspace` runs the agent inside a sandbox (see
+// `Sandbox`); `resumeSessionId` continues a previous run's conversation (from
+// `AgentRunResult.sessionId`) so follow-up feedback keeps the agent's context;
+// `timeout` overrides the backend's default run timeout.
+final case class AgentRunRequest(
+    prompt:          String,
+    modelId:         String,
+    mcpServers:      List[McpServerConfig] = Nil,
+    policy:          AgentPolicy = AgentPolicy.default,
+    skills:          AgentSkills = AgentSkills.none,
+    systemPrompt:    Option[String] = None,
+    workspace:       Option[Workspace] = None,
+    resumeSessionId: Option[String] = None,
+    timeout:         Option[Duration] = None,
+)
 
 // The provider-agnostic seam an eval arm runs against: a prompt plus the MCP
 // servers to expose + an `AgentPolicy` and a model id, in; an answer plus
@@ -77,6 +103,18 @@ trait AgentLoop:
     systemPrompt.filter(_.nonEmpty) match
       case None    => run(prompt, modelId, mcpServers, policy, skills)
       case Some(_) => ZIO.fail(UnsupportedOperationException("this AgentLoop backend does not support per-run system prompts"))
+
+  // The general entry point. A request without a workspace or resume session
+  // delegates to the six-argument `run`, so every existing backend supports
+  // it. Running inside a sandboxed `Workspace` (the agent process itself
+  // executes there, so its tools see only the workspace) or resuming a prior
+  // session requires a backend that overrides this method.
+  def run(request: AgentRunRequest): Task[AgentRunResult] =
+    if request.workspace.nonEmpty then
+      ZIO.fail(UnsupportedOperationException("this AgentLoop backend cannot run inside a sandbox workspace"))
+    else if request.resumeSessionId.nonEmpty then
+      ZIO.fail(UnsupportedOperationException("this AgentLoop backend cannot resume sessions"))
+    else run(request.prompt, request.modelId, request.mcpServers, request.policy, request.skills, request.systemPrompt)
 
   // Like `run`, but constrains the FINAL output to `schema` and returns ONLY
   // that structured JSON text (the judge's use — one structured verdict set

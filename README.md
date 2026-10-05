@@ -15,13 +15,17 @@ results).
 
 - **`AgentLoop`** — the provider-agnostic seam: `run` / `runStructured` take a
   prompt, a model id, a list of `McpServerConfig` to expose, an
-  `AgentPolicy` (web / tool-search), and optionally `AgentSkills` plus a per-run
-  system prompt; they return an `AgentRunResult` (answer + efficiency metrics +
-  a `TranscriptEvent` list). Existing custom backends remain compatible for
-  skill-free, system-prompt-free arms. Bundled backends:
+  `AgentPolicy` (web / tool-search / coding), and optionally `AgentSkills` plus
+  a per-run system prompt; they return an `AgentRunResult` (answer + efficiency
+  metrics, including cache tokens, cost, and session id where the backend
+  reports them, + a `TranscriptEvent` list). `run(AgentRunRequest)` is the
+  general entry point; it adds a sandbox `workspace`, `resumeSessionId`, and a
+  per-run `timeout`. Existing custom backends remain compatible for skill-free,
+  system-prompt-free, workspace-free arms. Bundled backends:
   - **`ClaudeCliAgentLoop`** — the `claude -p` CLI (stream-json parsed for full
     metrics + transcript; MCP via `--mcp-config`; system prompts via
-    `--append-system-prompt`).
+    `--append-system-prompt`). It can run inside a sandbox workspace and
+    resume a session there (see [Workspace evals](#workspace-evals)).
   - **`KiroCliAgentLoop`** — the `kiro-cli chat` CLI (headless v2
     `stream-json`; MCP via a throwaway agent config). Its ACP stream is
     normalized into message/thinking/tool-call/result transcript events;
@@ -57,6 +61,17 @@ results).
 - **`EvalRunner`** — drives arms × models × samples through the `AgentLoop`,
   grades each sample, aggregates into `ArmResult`s, and streams live progress
   through an optional `EvalObserver`. No `DataSource`, no host types.
+
+- **`Sandbox` / `Workspace`** — an isolated, ephemeral place to run untrusted,
+  agent-produced commands: `run` (shell), `exec` (argv with stdin/env),
+  `writeFile` / `readFile`, and `copyOut` to keep the work product.
+  `DockerSandbox` provisions one container per workspace from the
+  `WorkspaceSpec`'s image.
+
+- **`WorkspaceEvalRunner`** — runs the agent inside a workspace, verifies the
+  workspace's end state with a `WorkspaceVerifier`, and feeds failures back to
+  the agent until it passes or runs out of attempts. Reports time and tokens
+  summed over attempts.
 
 ### Example
 
@@ -190,11 +205,75 @@ Common answer checks avoid regexes for simple predicates:
 | `AnswerContains*`, `AnswerMatches`, `AnswerNotMatches` | Yes | Yes | Uses `AgentRunResult.answer`; works for every backend. |
 | `ToolCalled`, `ToolInputContains` | Yes | Yes | A custom backend must emit `TranscriptEvent.ToolCall`. |
 | `ResourceRead` | Yes | Yes | A custom backend must emit tool calls/results containing the resource URI. |
-| `CommandSucceeds`, `CommandOutputMatches`, `FileExists` | Backend-independent | Backend-independent | Requires `Checks.evaluateAll(..., workspace = Some(...))`; `EvalRunner` has no workspace and fails these checks closed. |
+| `CommandSucceeds`, `CommandOutputMatches`, `FileExists` | Backend-independent | Backend-independent | Requires a workspace: `Checks.evaluateAll(..., workspace = Some(...))`, `Checks.detailedSandboxCheck`, or `WorkspaceVerifier.fromChecks` in `WorkspaceEvalRunner`. `EvalRunner` has no workspace and fails these checks closed. |
 
 Transcript checks are not inferred from the numeric `toolCalls` metric: the
 backend must supply normalized transcript events. Both bundled CLI backends do
 so; unavailable token/turn metrics remain `0` rather than being estimated.
+
+### Workspace evals
+
+For coding tasks ("build X from an empty directory"), the agent works inside a
+sandbox: it builds, tests, and iterates there, and only the workspace is
+visible to its tools. `WorkspaceEvalRunner` then:
+
+1. provisions a fresh `Workspace` per sample from the arm's `WorkspaceSpec`
+   (image, seed files, environment);
+2. runs the agent with `AgentPolicy(coding = true)`, which grants the backend's
+   coding tools (for Claude: Bash, Read, Write, Edit, Glob, Grep, todo/task
+   tracking; subagents stay disallowed so reported usage is the whole cost);
+3. verifies the workspace with a `WorkspaceVerifier`, which returns named
+   `CheckOutcome`s;
+4. if verification failed, resumes the agent's session with the failing checks
+   as feedback (`Config.feedback`), up to `Config.maxAttempts`;
+5. measures the finished workspace (`Config.measure`, for example lines of
+   code) and optionally copies it to the host (`Config.exportTo`).
+
+`WorkspaceSampleResult.totals` sums every attempt: host wall time of the agent
+runs, backend-reported duration, turns, tool calls, input/output/cache tokens,
+and cost. Verification and measurement time are recorded per attempt but are
+not part of the totals. Samples run one at a time by default
+(`Config.parallelism = 1`) so concurrent builds don't distort timings.
+
+```scala
+import com.jamesward.zio_evals.*
+import com.jamesward.zio_evals.cli.ClaudeCliAgentLoop
+import zio.*
+
+val arm = WorkspaceArm(
+  EvalArm("go", "Go", policy = AgentPolicy(coding = true)),
+  WorkspaceSpec(image = Some("my-go-toolchain:1")),
+)
+
+val verifier = WorkspaceVerifier.fromChecks(List(
+  EvalCheck.CommandSucceeds("go test ./..."),
+  EvalCheck.CommandOutputMatches("go run .", "^hello$"),
+))
+
+val results = WorkspaceEvalRunner.run(
+  EvalSpec("Write a Go program that prints hello, with a test.", criteria = "n/a"),
+  List(arm), List("sonnet"), samples = 3,
+  ClaudeCliAgentLoop(maxBudgetUsd = "5.00"),
+  DockerSandbox("my-go-toolchain:1"),
+  verifier,
+  WorkspaceEvalRunner.Config(maxAttempts = 3, agentTimeout = 30.minutes),
+)
+```
+
+The image must contain the agent CLI (`claude`) and the task's toolchain.
+Anything the agent downloads or compiles inside the workspace is part of the
+measured run; anything baked into the image is not. `ClaudeCliAgentLoop`
+forwards `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` into the workspace
+(or seed a credentials file with `WorkspaceSpec.seedFiles`), and
+`workspaceEnv` adds variables such as `BASH_MAX_TIMEOUT_MS` for long builds.
+`KiroCliAgentLoop` does not support workspaces (it reports no token counts).
+
+`DockerSandbox` options: `user`, `network`, bind `mounts`, `groupAdd`, `env`,
+and `extraRunArgs` (resource limits, ulimits, ...). `DockerSandbox.ensureImage`
+builds an image from a Dockerfile directory unless the tag already exists.
+Mounting the Docker socket (for Testcontainers inside the workspace) gives the
+agent's code control of the host's Docker daemon; only do that on a machine
+where that is acceptable.
 
 ### Evaluating TypeSafeAI orchestration
 
