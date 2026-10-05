@@ -10,7 +10,7 @@ object ClaudeStreamJsonSpec extends ZIOSpecDefault:
       |{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"let me check"},{"type":"tool_use","name":"mcp__toolbook__search","input":{"q":"x"}}]}}
       |{"type":"user","message":{"content":[{"type":"tool_result","content":"result text","is_error":false}]}}
       |{"type":"assistant","message":{"content":[{"type":"text","text":"the answer"}]}}
-      |{"type":"result","subtype":"success","result":"the answer","num_turns":3,"duration_ms":1200,"is_error":false,"usage":{"input_tokens":5,"cache_read_input_tokens":100,"cache_creation_input_tokens":20,"output_tokens":42},"total_cost_usd":0.01}""".stripMargin
+      |{"type":"result","subtype":"success","result":"the answer","num_turns":3,"duration_ms":1200,"is_error":false,"usage":{"input_tokens":5,"cache_read_input_tokens":100,"cache_creation_input_tokens":20,"output_tokens":42},"total_cost_usd":0.01,"session_id":"abc"}""".stripMargin
 
   def spec = suite("ClaudeStreamJson")(
     test("parses transcript events in order") {
@@ -31,6 +31,10 @@ object ClaudeStreamJsonSpec extends ZIOSpecDefault:
         fr.inputTokens == 125L, // 5 + 100 + 20
         fr.outputTokens == 42L,
         !fr.isError,
+        fr.cacheReadTokens == 100L,
+        fr.cacheCreationTokens == 20L,
+        fr.totalCostUsd == 0.01,
+        fr.sessionId.contains("abc"),
       )
     },
     test("flags an error result subtype") {

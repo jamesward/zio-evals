@@ -27,6 +27,9 @@ object ClaudeStreamJson:
       isError:          Boolean,
       errorDetail:      Option[String],
       structuredOutput: Option[Json],
+      cacheReadTokens:     Long = 0,
+      cacheCreationTokens: Long = 0,
+      sessionId:           Option[String] = None,
   )
 
   final case class Parsed(events: List[TranscriptEvent], finalResult: Option[FinalResult])
@@ -63,6 +66,7 @@ object ClaudeStreamJson:
       usage:                                            Option[WireUsage],
       @fieldName("total_cost_usd") totalCostUsd:        Option[Double],
       @fieldName("structured_output") structuredOutput: Option[DynamicValue],
+      @fieldName("session_id") sessionId:               Option[String],
   ) derives Schema
 
   private def rawJson(value: DynamicValue): String =
@@ -119,6 +123,9 @@ object ClaudeStreamJson:
       structuredOutput = line.structuredOutput
                            .flatMap(value => Json.decoder.decodeJson(rawJson(value)).toOption)
                            .collect { case obj: Json.Obj => obj },
+      cacheReadTokens     = usage.flatMap(_.cacheReadInputTokens).getOrElse(0L),
+      cacheCreationTokens = usage.flatMap(_.cacheCreatedTokens).getOrElse(0L),
+      sessionId           = line.sessionId,
     )
 
   def parse(stdout: String): Parsed =

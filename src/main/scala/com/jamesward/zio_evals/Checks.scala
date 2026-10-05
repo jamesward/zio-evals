@@ -54,6 +54,24 @@ object Checks:
         ws.readFile(path).as(Some(true)).catchAll(_ => ZIO.some(false))
       case _ => ZIO.none
 
+  // Like `sandboxCheck`, but explains the outcome (exit code and output tail)
+  // so a failure can be reported or fed back to an agent. Transcript checks
+  // have no workspace meaning here and fail.
+  def detailedSandboxCheck(check: EvalCheck, ws: Workspace, timeout: Duration): UIO[CheckOutcome] =
+    def tail(r: ExecResult): String = (r.stdout + "\n" + r.stderr).trim.takeRight(3000)
+    val outcome: IO[SandboxError, CheckOutcome] = check match
+      case EvalCheck.CommandSucceeds(command) =>
+        ws.run(command, timeout).map(r => CheckOutcome(s"command `$command` succeeds", r.exitCode == 0, s"exit ${r.exitCode}\n${tail(r)}"))
+      case EvalCheck.CommandOutputMatches(command, regex) =>
+        ws.run(command, timeout).map { r =>
+          CheckOutcome(s"command `$command` output matches /$regex/", compile(regex).exists(_.findFirstIn(r.stdout).isDefined), s"exit ${r.exitCode}\n${tail(r)}")
+        }
+      case EvalCheck.FileExists(path) =>
+        ws.readFile(path).as(CheckOutcome(s"file $path exists", passed = true)).catchAll(e => ZIO.succeed(CheckOutcome(s"file $path exists", passed = false, e.message)))
+      case other =>
+        ZIO.succeed(CheckOutcome(other.toString, passed = false, "not a workspace check"))
+    outcome.catchAll(e => ZIO.succeed(CheckOutcome(check.toString, passed = false, e.message)))
+
   // Evaluate every check and AND the results. `workspace` is required for the
   // command/file checks; when absent, such a check contributes `false` (an
   // unverifiable action check must not silently pass). Transcript/answer checks

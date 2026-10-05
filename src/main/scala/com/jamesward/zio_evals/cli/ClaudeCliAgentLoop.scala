@@ -9,6 +9,7 @@ import zio.schema.*
 import zio.schema.annotation.fieldName
 
 import java.io.File
+import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 
 // An `AgentLoop` backed by the `claude -p` CLI. MCP servers are isolated with
@@ -22,6 +23,10 @@ final class ClaudeCliAgentLoop(
     runTimeout:    Duration       = 120.seconds,
     allowShell:    Boolean        = false,
     systemPrompt:  Option[String] = None,
+    // Extra environment for runs inside a sandbox workspace (for example the
+    // Bash tool's BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS for long
+    // builds). Host auth variables (`authEnvVars`) are forwarded automatically.
+    workspaceEnv:  Map[String, String] = Map.empty,
 ) extends AgentLoop:
 
   import ClaudeCliAgentLoop.*
@@ -57,16 +62,95 @@ final class ClaudeCliAgentLoop(
       systemPromptOverride = systemPrompt,
     ).map { parsed =>
       val finalR = parsed.finalResult.get
-      AgentRunResult(
-        answer       = finalR.result,
-        iterations   = finalR.numTurns,
-        toolCalls    = toolCallCount(parsed.events),
-        inputTokens  = finalR.inputTokens,
-        outputTokens = finalR.outputTokens,
-        latencyMs    = finalR.durationMs,
-        events       = parsed.events,
-      )
+      toRunResult(parsed)
     }
+
+  // Runs inside `request.workspace` when present: the `claude` process itself
+  // executes in the sandbox, so its Bash/Read/Write tools only see the
+  // workspace. Without a workspace the throwaway host temp project is used
+  // (which cannot be resumed, because the temp project is deleted).
+  override def run(request: AgentRunRequest): Task[AgentRunResult] =
+    request.workspace match
+      case Some(ws) => runInWorkspace(ws, request).map(toRunResult)
+      case None if request.resumeSessionId.nonEmpty =>
+        ZIO.fail(UnsupportedOperationException("ClaudeCliAgentLoop can only resume sessions inside a workspace"))
+      case None =>
+        run(request.prompt, request.modelId, request.mcpServers, request.policy, request.skills, request.systemPrompt)
+
+  private def toRunResult(parsed: ClaudeStreamJson.Parsed): AgentRunResult =
+    val finalR = parsed.finalResult.get
+    AgentRunResult(
+      answer              = finalR.result,
+      iterations          = finalR.numTurns,
+      toolCalls           = toolCallCount(parsed.events),
+      inputTokens         = finalR.inputTokens,
+      outputTokens        = finalR.outputTokens,
+      latencyMs           = finalR.durationMs,
+      events              = parsed.events,
+      cacheReadTokens     = finalR.cacheReadTokens,
+      cacheCreationTokens = finalR.cacheCreationTokens,
+      costUsd             = finalR.totalCostUsd,
+      sessionId           = finalR.sessionId,
+    )
+
+  private val controlDir = "/tmp/zio-evals-claude"
+
+  private def runInWorkspace(ws: Workspace, request: AgentRunRequest): Task[ClaudeStreamJson.Parsed] =
+    val label = "arm/workspace"
+    val timeout = request.timeout.getOrElse(runTimeout)
+    def write(path: String, bytes: Array[Byte]): Task[Unit] = ws.writeFile(path, bytes).mapError(_.toThrowable)
+    for
+      // Skills are staged on the host, then copied into the workspace project's
+      // .claude/skills (the only setting source a skills arm enables).
+      skillFiles <- ZIO.scoped {
+                      for
+                        tmp <- ZIO.acquireRelease(ZIO.attempt(Files.createTempDirectory("agent-skills")))(d => ZIO.attempt(deleteRecursively(d.toFile)).ignoreLogged)
+                        mat <- SkillMaterializer.materialize(request.skills, tmp)
+                        files <- ZIO.attemptBlocking {
+                                   import scala.jdk.CollectionConverters.*
+                                   scala.util.Using.resource(Files.walk(tmp))(_.iterator().asScala.filter(Files.isRegularFile(_)).toList)
+                                     .map(f => tmp.relativize(f).toString -> Files.readAllBytes(f))
+                                 }
+                      yield files
+                    }
+      _ <- ZIO.foreachDiscard(skillFiles)((rel, bytes) => write(s".claude/skills/$rel", bytes))
+      mcpPath <- if request.mcpServers.isEmpty then ZIO.none
+                 else
+                   val p = s"$controlDir/mcp-config.json"
+                   write(p, McpServerConfig.claudeMcpConfigJson(request.mcpServers).getBytes(StandardCharsets.UTF_8)).as(Some(p))
+      effectiveSystemPrompt = request.systemPrompt.filter(_.nonEmpty).orElse(systemPrompt)
+      args = cliArgs(
+               request.skills.augmentPrompt(request.prompt),
+               effectiveModel(request.modelId),
+               mcpPath,
+               request.mcpServers.map(_.name),
+               request.policy.web,
+               schema = None,
+               skillNames = request.skills.values.map(_.name),
+               systemPrompt = effectiveSystemPrompt,
+               coding = request.policy.coding,
+               resume = request.resumeSessionId,
+             )
+      authEnv <- ZIO.foreach(authEnvVars)(v => zio.System.env(v).orElseSucceed(None).map(_.filter(_.trim.nonEmpty).map(v -> _))).map(_.flatten.toMap)
+      env = workspaceEnv ++ authEnv ++ Map(
+              "CLAUDE_CODE_DISABLE_AUTO_MEMORY" -> "1",
+              "DISABLE_AUTOUPDATER"             -> "1",
+              "ENABLE_TOOL_SEARCH"              -> (if request.policy.toolSearch then "true" else "false"),
+            )
+      _ <- ZIO.logInfo(s"claude CLI request [$label] (timeout=$timeout, resume=${request.resumeSessionId.getOrElse("-")}): claude ${args.map(_.take(200)).mkString(" ")}")
+      res <- ws.exec("claude" :: args, timeout, env = env).mapError(_.toThrowable)
+      parsed = ClaudeStreamJson.parse(res.stdout)
+      finalR <- ZIO.fromOption(parsed.finalResult).orElseFail(
+                  RuntimeException(s"claude -p (workspace) exited ${res.exitCode} with no result line; stderr: ${res.stderr.takeRight(2000)}; stdout: ${res.stdout.takeRight(2000)}")
+                )
+      _ <- ZIO.logInfo(
+             s"claude CLI usage [$label]: turns=${finalR.numTurns} inTok=${finalR.inputTokens} outTok=${finalR.outputTokens} " +
+               s"costUsd=${finalR.totalCostUsd} durationMs=${finalR.durationMs} toolCalls=${toolCallCount(parsed.events)} isError=${finalR.isError}"
+           )
+      // A workspace run's error result (budget or turn limit, ...) still carries
+      // its usage, so it is returned and the workspace verifier decides.
+      _ <- ZIO.logWarning(s"claude CLI reported an error [$label]: ${finalR.errorDetail.getOrElse(finalR.result)}").when(finalR.isError)
+    yield parsed
 
   def runStructured(prompt: String, modelId: String, mcpServers: List[McpServerConfig], policy: AgentPolicy, schema: Json): Task[String] =
     // Judges are intentionally skill-free.
@@ -89,11 +173,14 @@ final class ClaudeCliAgentLoop(
       schema: Option[Json],
       skillNames: List[String] = Nil,
       systemPrompt: Option[String] = None,
+      coding: Boolean = false,
+      resume: Option[String] = None,
   ): List[String] =
     val mcpConfigArgs  = mcpConfigPath.toList.flatMap(p => List("--mcp-config", p))
     val schemaArgs     = schema.toList.flatMap(s => List("--json-schema", s.toJson))
     val systemArgs     = systemPrompt.filter(_.nonEmpty).toList.flatMap(p => List("--append-system-prompt", p))
-    val shellTools    = if allowShell then List("Bash") else Nil
+    val shellTools    = if coding then codingTools else if allowShell then List("Bash") else Nil
+    val resumeArgs    = resume.toList.flatMap(id => List("--resume", id))
     val skillGrants   = skillNames.map(n => s"Skill($n)")
     val allowed       = (if web then webTools else Nil) ++ serverNames.map(n => s"mcp__$n") ++ shellTools ++ skillGrants
     val allowedArgs   = if allowed.isEmpty then Nil else List("--allowedTools") ++ allowed
@@ -101,7 +188,7 @@ final class ClaudeCliAgentLoop(
     val disallowed    = (disallowedTools ++ (if web then Nil else webTools)).filterNot(permittedAgentic.contains)
     val settingSources = if skillNames.nonEmpty then "project" else ""
     List("-p", prompt, "--setting-sources", settingSources, "--strict-mcp-config", "--output-format", "stream-json", "--verbose", "--max-budget-usd", maxBudgetUsd, "--model", model) ++
-      schemaArgs ++ systemArgs ++ mcpConfigArgs ++ allowedArgs ++ List("--disallowedTools") ++ disallowed
+      resumeArgs ++ schemaArgs ++ systemArgs ++ mcpConfigArgs ++ allowedArgs ++ List("--disallowedTools") ++ disallowed
 
   def cliArgsFor(
       prompt: String,
@@ -156,7 +243,9 @@ final class ClaudeCliAgentLoop(
              case None => ZIO.logError(s"claude CLI produced no result line [$label]; stdout above")
       finalR <- ZIO.fromOption(parsed.finalResult).orElseFail(RuntimeException(s"claude -p produced no result line:\n$stdout"))
       _ <- ZIO.logError(s"claude CLI reported an error [$label]: ${finalR.errorDetail.getOrElse(finalR.result)}").when(finalR.isError)
-      _ <- ZIO.fail(RuntimeException(s"claude -p reported an error: ${finalR.errorDetail.getOrElse(finalR.result)}")).when(finalR.isError)
+      // A workspace run's error result (budget or turn limit, ...) still carries
+      // its usage, so it is returned and the workspace verifier decides.
+      _ <- ZIO.logWarning(s"claude CLI reported an error [$label]: ${finalR.errorDetail.getOrElse(finalR.result)}").when(finalR.isError)
     yield parsed
 
   private def runInTemp(
@@ -210,6 +299,12 @@ object ClaudeCliAgentLoop:
 
   val webTools: List[String] = List("WebFetch", "WebSearch")
 
+  // Built-in tools granted by `AgentPolicy.coding` (only inside a sandbox
+  // workspace). Subagents (`Task`) stay disallowed so a run's reported usage is
+  // the whole cost of the work.
+  val codingTools: List[String] =
+    List("Bash", "Read", "Write", "Edit", "Glob", "Grep", "TodoWrite", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "TaskOutput", "TaskStop")
+
   def toolCallCount(events: Seq[TranscriptEvent]): Int =
     events.count { case TranscriptEvent.ToolCall(_, _) => true; case _ => false }
 
@@ -219,8 +314,9 @@ object ClaudeCliAgentLoop:
       runTimeout: Duration = 120.seconds,
       allowShell: Boolean = false,
       systemPrompt: Option[String] = None,
+      workspaceEnv: Map[String, String] = Map.empty,
   ): ClaudeCliAgentLoop =
-    new ClaudeCliAgentLoop(modelOverride, maxBudgetUsd, runTimeout, allowShell, systemPrompt)
+    new ClaudeCliAgentLoop(modelOverride, maxBudgetUsd, runTimeout, allowShell, systemPrompt, workspaceEnv)
 
   val authEnvVars: List[String] = List("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
 
