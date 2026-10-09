@@ -2,7 +2,7 @@ organization := "com.jamesward"
 
 name := "zio-evals"
 
-scalaVersion := "3.9.0"
+scalaVersion := "3.10.0"
 
 scalacOptions ++= Seq(
   "-language:strictEquality",
@@ -78,4 +78,4 @@ Global / mcpPort := 5117
 // SkillsJars: extract agent Skills with `./sbt extractSkillsJars`
 skillsJarsOutputDir := Some(file(".kiro/skills"))
 
-libraryDependencies += "com.jamesward" % "skills" % "0.0.10" % Skills
+libraryDependencies += "com.jamesward" % "skills" % "0.0.12" % Skills
