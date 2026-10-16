@@ -7,3 +7,4 @@
 - Validation: `./sbt test` (what CI runs, JDK 25).
 - MCP server `sbt-mcp-zio-evals` (sbt-mcp) listens on `http://127.0.0.1:5117/`. Kiro uses the HTTP entry in `.kiro/settings/mcp.json`; start sbt first. Claude Code uses `.mcp.json`, which runs `.claude/sbt-mcp-stdio.sh` (approved in `.claude/settings.json`). That stdio bridge starts a foreground sbt in cloud sessions (`CLAUDE_CODE_REMOTE=true`), and locally only connects to an sbt you already started. Its tools are deferred: load them with ToolSearch (search `sbt-mcp-zio-evals`). Diagnostics go to `/tmp/sbt-mcp-stdio.log` and `/tmp/sbt-mcp-server.log`.
 - Maintenance routine: `.factory/MAINTENANCE.md` (weekly), following the `zen-of-projects` Skill.
+- `RealCliSpec` makes real `claude -p` calls whenever `claude` is on the PATH. In Claude Code cloud sessions it fails with `error_max_budget_usd` (the $0.10 cap); that failure is environmental. CI has no `claude`, so the test is skipped there.
