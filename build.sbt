@@ -12,7 +12,6 @@ scalacOptions ++= Seq(
 val zioVersion       = "2.1.27"
 val zioSchemaVersion = "1.9.0"
 
-
 val useLocal = sys.props.contains("local")
 val localTypeSafeAICheckout = file(sys.props("user.home")) / "projects" / "zio-typesafe-ai"
 libraryDependencies ++= Seq(
@@ -70,12 +69,7 @@ developers := List(
 
 ThisBuild / versionScheme := Some("semver-spec")
 
-// sbt-mcp (loopback-only: its tools can execute build tasks)
-ThisBuild / mcpEnabled := true
-ThisBuild / mcpHost := "127.0.0.1"
-ThisBuild / mcpPort := 5117
-
-// SkillsJars: extract agent Skills with `./sbt extractSkillsJars`
+// SkillsJars: extract agent Skills with `./sbta extractSkillsJars`
 skillsJarsOutputDir := Some(file(".kiro/skills"))
 
 libraryDependencies += "com.jamesward" % "skills" % "0.0.15" % Skills
