@@ -226,7 +226,7 @@ The normalized `iterations` value is the common Jev logical-turn metric. Input/o
 The orchestration API is released in `zio-typesafe-ai` 0.1.0, which is the default pinned dependency:
 
 ```bash
-./sbt --server test
+./sbta --server test
 ```
 
 For source-level development against `~/projects/zio-typesafe-ai`, add `-Dlocal`; the local source project then replaces the published artifact.
