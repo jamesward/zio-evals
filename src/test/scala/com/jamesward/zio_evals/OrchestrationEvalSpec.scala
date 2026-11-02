@@ -1,10 +1,10 @@
 package com.jamesward.zio_evals
 
-import com.jamesward.zio_typesafe_ai.TypeSafeAI
-import com.jamesward.zio_typesafe_ai.orchestration.*
-import com.jamesward.zio_typesafe_ai.orchestration.given
-import com.jamesward.zio_typesafe_ai.orchestration.model.*
-import com.jamesward.zio_typesafe_ai.orchestration.runtime.*
+import com.jamesward.zio_decisions.Decisions
+import com.jamesward.zio_decisions.orchestration.*
+import com.jamesward.zio_decisions.orchestration.given
+import com.jamesward.zio_decisions.orchestration.model.*
+import com.jamesward.zio_decisions.orchestration.runtime.*
 import zio.json.ast.Json
 import zio.test.*
 
@@ -38,18 +38,18 @@ object OrchestrationEvalSpec extends ZIOSpecDefault:
 
   private val baseMetrics = OrchestrationMetrics(
     mode = OrchestrationMode.Plan,
-    jevLogicalTurns = 8,
-    jevLogicalInputTokens = 100,
-    jevLogicalOutputTokens = 10,
-    jevLogicalTimeMs = 100,
-    jevPhysicalAttempts = 15,
-    jevPhysicalSuccesses = 15,
-    jevPhysicalFailures = 0,
-    jevPhysicalTimeMs = 120,
-    jevFilterCalls = 7,
-    jevFilterInputTokens = 20,
-    jevFilterOutputTokens = 2,
-    jevFilterTimeMs = 30,
+    decisionLogicalTurns = 8,
+    decisionLogicalInputTokens = 100,
+    decisionLogicalOutputTokens = 10,
+    decisionLogicalTimeMs = 100,
+    decisionPhysicalAttempts = 15,
+    decisionPhysicalSuccesses = 15,
+    decisionPhysicalFailures = 0,
+    decisionPhysicalTimeMs = 120,
+    decisionFilterCalls = 7,
+    decisionFilterInputTokens = 20,
+    decisionFilterOutputTokens = 2,
+    decisionFilterTimeMs = 30,
     extractCalls = 2,
     extractInputTokens = 30,
     extractOutputTokens = 3,
@@ -82,7 +82,7 @@ object OrchestrationEvalSpec extends ZIOSpecDefault:
     mode = mode,
     workflow = currentWorkflow,
     planningTurns = Nil,
-    planningUsage = TypeSafeAI.Usage(100, 10),
+    planningUsage = Decisions.Usage(100, 10),
     planningLatencyMs = 100,
     execution = ExecutionReport(
       Json.Str("answer"),
@@ -95,7 +95,7 @@ object OrchestrationEvalSpec extends ZIOSpecDefault:
     actionTrace = trace,
   )
 
-  def spec = suite("TypeSafeAI orchestration evaluation")(
+  def spec = suite("zio-decisions orchestration evaluation")(
     test("Ready checks use committed filter values and work without no-plan trace events") {
       val plan = result(trace = Vector.empty)
       val missingValue = result(values = Map.empty, trace = Vector("filter-outcome:Ready:1/3:attempt=1"))
@@ -109,7 +109,7 @@ object OrchestrationEvalSpec extends ZIOSpecDefault:
     },
     test("mode, backend, physical-call, recovery, and replan checks compare experiment arms") {
       val jev = result()
-      val llmMetrics = baseMetrics.copy(jevFilterCalls = 0, filterCalls = 2, mcpPhysicalFailures = 1)
+      val llmMetrics = baseMetrics.copy(decisionFilterCalls = 0, filterCalls = 2, mcpPhysicalFailures = 1)
       val llm = result(OrchestrationMode.NoPlanLlmFilters, metrics = llmMetrics)
       assertTrue(
         OrchestrationCheck.evaluate(OrchestrationCheck.ModeIs(OrchestrationMode.Plan), jev),

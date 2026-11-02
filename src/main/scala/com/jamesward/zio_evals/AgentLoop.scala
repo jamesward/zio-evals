@@ -10,6 +10,16 @@ final case class CapturedToolCall(name: String, input: String)
 object CapturedToolCall:
   given CanEqual[CapturedToolCall, CapturedToolCall] = CanEqual.derived
 
+// When one tool call ran within its turn, as the client saw it: from the call's
+// first report to its completion, in ms since the turn started. `status` is how
+// it ended ("completed", "failed", or "unfinished"). `meta` is the call's own
+// `_meta`, as the agent reported it (which of its loops made the call, say).
+final case class ToolCallTiming(name: String, input: String, status: String, startMs: Long, durationMs: Long,
+    meta: Option[zio.json.ast.Json.Obj] = None)
+
+object ToolCallTiming:
+  given CanEqual[ToolCallTiming, ToolCallTiming] = CanEqual.derived
+
 // The answer plus the efficiency metrics an eval records per (arm x model):
 // iterations, tool calls, tokens, wall-time. `events` is the full turn-by-turn
 // conversation (agent messages, thinking, tool calls + their results) captured
@@ -31,6 +41,12 @@ final case class AgentRunResult(
     cacheCreationTokens: Long = 0,
     costUsd:             Double = 0.0,
     sessionId:           Option[String] = None,
+    // Backend-specific detail about the run (an ACP agent's prompt-response
+    // `_meta`, say, where an agent reports its own metrics). None when absent.
+    meta:                Option[Json.Obj] = None,
+    // Each tool call's timing within the turn, in the order calls started, for
+    // backends that observe it (ACP's updates). Empty when the backend doesn't.
+    toolCallTimings:     List[ToolCallTiming] = Nil,
 ):
   // The normalized calls captured by any backend that emits ToolCall events.
   // Keeping this derived from `events` makes the transcript the single source

@@ -2,7 +2,7 @@ organization := "com.jamesward"
 
 name := "zio-evals"
 
-scalaVersion := "3.10.0"
+scalaVersion := "3.9.0"
 
 scalacOptions ++= Seq(
   "-language:strictEquality",
@@ -13,7 +13,9 @@ val zioVersion       = "2.1.27"
 val zioSchemaVersion = "1.9.0"
 
 val useLocal = sys.props.contains("local")
-val localTypeSafeAICheckout = file(sys.props("user.home")) / "projects" / "zio-typesafe-ai"
+// -Dlocal: zio-decisions and zio-acp from their sibling checkouts instead of their releases
+val localDecisionsCheckout = file("..").getAbsoluteFile / "zio-decisions"
+val localAcpCheckout = file("..").getAbsoluteFile / "zio-acp"
 libraryDependencies ++= Seq(
   "dev.zio" %% "zio"                   % zioVersion,
   "dev.zio" %% "zio-concurrent"        % zioVersion,
@@ -35,13 +37,16 @@ libraryDependencies ++= Seq(
   "dev.zio" %% "zio-test-magnolia" % zioVersion % Test,
 )
 
-libraryDependencies ++= Option.when(!useLocal)("com.jamesward" %% "zio-typesafe-ai" % "0.1.0").toSeq
+libraryDependencies ++= (if useLocal then Nil else Seq(
+  "com.jamesward" %% "zio-decisions" % "0.2.0",
+  "com.jamesward" %% "zio-acp"       % "0.1.0",
+))
 
 lazy val root = (project in file(".")).dependsOn(
-  Option.when(useLocal) {
-    require(localTypeSafeAICheckout.exists, s"-Dlocal requires ${localTypeSafeAICheckout.getAbsolutePath}")
-    RootProject(localTypeSafeAICheckout): ClasspathDep[ProjectReference]
-  }.toSeq *
+  (if !useLocal then Nil else List(localDecisionsCheckout, localAcpCheckout).map { dir =>
+    require(dir.exists, s"-Dlocal requires ${dir.getAbsolutePath}")
+    RootProject(dir): ClasspathDep[ProjectReference]
+  }) *
 )
 
 fork := true
@@ -72,4 +77,4 @@ ThisBuild / versionScheme := Some("semver-spec")
 // SkillsJars: extract agent Skills with `./sbta extractSkillsJars`
 skillsJarsOutputDir := Some(file(".kiro/skills"))
 
-libraryDependencies += "com.jamesward" % "skills" % "0.0.19" % Skills
+libraryDependencies += "com.jamesward" % "skills" % "0.0.21" % Skills

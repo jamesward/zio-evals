@@ -1,25 +1,26 @@
 package com.jamesward.zio_evals
 
-import com.jamesward.zio_typesafe_ai.TypeSafeAI
-import com.jamesward.zio_typesafe_ai.TypeSafeAI.*
+import com.jamesward.zio_decisions.DecisionModel
+import com.jamesward.zio_decisions.Decisions.*
+import com.jamesward.zio_decisions.typesafe.TypeSafe
 import zio.*
 import zio.http.{Client as HttpClient}
 import zio.test.*
 import zio.test.TestAspect.*
 
 /** Live-test infrastructure provides `TYPESAFE_AI_KEY`; applications using
-  * `TypeSafeAI.Client.live` should use the SDK-standard `TYPESAFE_API_KEY`.
+  * `TypeSafe.live` should use the SDK-standard `TYPESAFE_API_KEY`.
   */
 object JevJudgeIntegrationSpec extends ZIOSpecDefault:
 
   private def envOr(name: String, default: String): String =
     Option(java.lang.System.getenv(name)).getOrElse(default)
 
-  private val apiKey = ApiKey(envOr("TYPESAFE_AI_KEY", ""))
-  private val model  = ModelId(envOr("TYPESAFE_TEST_MODEL", ModelId.JevLatest.unwrap))
+  private val apiKey = TypeSafe.ApiKey(envOr("TYPESAFE_AI_KEY", ""))
+  private val model  = ModelId(envOr("TYPESAFE_TEST_MODEL", TypeSafe.JevLatest.unwrap))
 
-  private val jevLayer: ZLayer[HttpClient, Nothing, TypeSafeAI.Client] =
-    TypeSafeAI.Client.layer(apiKey, model)
+  private val jevLayer: ZLayer[HttpClient, Nothing, DecisionModel] =
+    TypeSafe.layer(apiKey, model)
 
   def spec = suite("JevJudge live integration")(
     test("grades an obvious correct and incorrect answer") {
@@ -45,7 +46,7 @@ object JevJudgeIntegrationSpec extends ZIOSpecDefault:
       )
     }
   ).provideSomeShared[Scope](HttpClient.default, jevLayer)
-    @@ ifEnvSet("TYPESAFE_AI_KEY")
+    @@ ifEnv("TYPESAFE_AI_KEY")(_.trim.nonEmpty)
     @@ withLiveClock
     @@ withLiveSystem
     @@ timeout(90.seconds)

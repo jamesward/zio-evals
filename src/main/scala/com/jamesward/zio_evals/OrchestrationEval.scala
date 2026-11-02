@@ -1,11 +1,11 @@
 package com.jamesward.zio_evals
 
-import com.jamesward.zio_typesafe_ai.orchestration.*
-import com.jamesward.zio_typesafe_ai.orchestration.given
-import com.jamesward.zio_typesafe_ai.orchestration.model.*
+import com.jamesward.zio_decisions.orchestration.*
+import com.jamesward.zio_decisions.orchestration.given
+import com.jamesward.zio_decisions.orchestration.model.*
 import zio.*
 
-/** Provider-neutral seam for evaluating a configured TypeSafeAI orchestration arm. */
+/** Provider-neutral seam for evaluating a configured zio-decisions orchestration arm. */
 trait OrchestrationLoop:
   def run(prompt: String, mode: OrchestrationMode): Task[OrchestrationResult]
 
@@ -45,9 +45,9 @@ object OrchestrationCheck:
         readyFilterIds.exists(id => result.execution.values.get(id).flatMap(_.asArray).exists(_.nonEmpty))
       case OrchestrationCheck.FilterBackendOnly(expected) => expected match
         case OrchestrationFilterBackend.Jev =>
-          result.metrics.jevFilterCalls > 0 && result.metrics.filterCalls == 0
+          result.metrics.decisionFilterCalls > 0 && result.metrics.filterCalls == 0
         case OrchestrationFilterBackend.Llm =>
-          result.metrics.filterCalls > 0 && result.metrics.jevFilterCalls == 0
+          result.metrics.filterCalls > 0 && result.metrics.decisionFilterCalls == 0
       case OrchestrationCheck.NoUnsafeFanOut =>
         !result.workflow.steps.exists:
           case Step.FanOut(_, _, _, _, FanOutAuthorization.Unsafe) => true
@@ -72,11 +72,11 @@ object OrchestrationEvalAdapter:
       result.actionTrace.toList.map(event => TranscriptEvent.Note(s"orchestration:$event"))
     AgentRunResult(
       answer = result.finalText,
-      iterations = result.metrics.jevLogicalTurns,
+      iterations = result.metrics.decisionLogicalTurns,
       toolCalls = result.metrics.mcpPhysicalCalls,
-      inputTokens = result.metrics.jevLogicalInputTokens.toLong + result.metrics.jevFilterInputTokens +
+      inputTokens = result.metrics.decisionLogicalInputTokens.toLong + result.metrics.decisionFilterInputTokens +
         result.metrics.extractInputTokens + result.metrics.filterInputTokens + result.metrics.summaryInputTokens,
-      outputTokens = result.metrics.jevLogicalOutputTokens.toLong + result.metrics.jevFilterOutputTokens +
+      outputTokens = result.metrics.decisionLogicalOutputTokens.toLong + result.metrics.decisionFilterOutputTokens +
         result.metrics.extractOutputTokens + result.metrics.filterOutputTokens + result.metrics.summaryOutputTokens,
       latencyMs = result.metrics.totalTimeMs,
       events = toolEvents ++ traceEvents :+ TranscriptEvent.AgentMessage(result.finalText),

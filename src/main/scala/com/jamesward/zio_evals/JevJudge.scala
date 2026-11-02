@@ -1,8 +1,8 @@
 package com.jamesward.zio_evals
 
-import com.jamesward.zio_typesafe_ai.TypeSafeAI
-import com.jamesward.zio_typesafe_ai.TypeSafeAI.*
-import com.jamesward.zio_typesafe_ai.TypeSafeAI.Error.retryOnRetryable
+import com.jamesward.zio_decisions.{DecisionModel, Decisions}
+import com.jamesward.zio_decisions.Decisions.*
+import com.jamesward.zio_decisions.Decisions.Error.retryOnRetryable
 import zio.*
 import zio.schema.*
 
@@ -76,13 +76,13 @@ object JevJudge:
       outputTokens:    Int,
   )
 
-  /** Builds a judge from an already configured TypeSafe AI client. The
-    * client's model is used (normally `jev-latest`). Retryable provider errors
-    * are retried according to zio-typesafe-ai's built-in backoff policy.
+  /** Builds a judge from an already configured decision model (normally
+    * TypeSafe's `jev-latest`). Retryable provider errors are retried
+    * according to zio-decisions' built-in backoff policy.
     */
-  def apply(client: TypeSafeAI.Client, passThreshold: Double = 0.5): JevJudge =
+  def apply(client: DecisionModel, passThreshold: Double = 0.5): JevJudge =
     fromClassifier(passThreshold) { candidate =>
-      TypeSafeAI
+      Decisions
         .ask(candidate, (passesRubric = question))
         .run
         .retryOnRetryable
@@ -97,8 +97,8 @@ object JevJudge:
         }
     }
 
-  /** Obtains the configured TypeSafe AI client from the ZIO environment. */
-  def make(passThreshold: Double = 0.5): ZIO[TypeSafeAI.Client, Nothing, JevJudge] =
+  /** Obtains the configured decision model from the ZIO environment. */
+  def make(passThreshold: Double = 0.5): ZIO[DecisionModel, Nothing, JevJudge] =
     ZIO.serviceWith(client => JevJudge(client, passThreshold))
 
   private[zio_evals] def fromClassifier(

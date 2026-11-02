@@ -32,6 +32,25 @@ results).
     metrics include provider-reported turn latency (measured wall-time fallback)
     and captured call count (token/turn counts are unavailable). Parse errors include the effective model and a bounded raw
     stream snippet.
+  - **`acp.AcpAgentLoop`** — any [Agent Client Protocol](https://agentclientprotocol.com)
+    agent (Kiro's `kiro-cli acp`, Claude Code through
+    `npx @agentclientprotocol/claude-agent-acp`, Zed's agents, your own), with
+    zio-evals as the ACP client an editor would be. Each run launches the agent
+    (`AcpAgentLoop(AgentCommand(...))`, or `AcpAgentLoop.connecting` for one
+    reached another way, in process say), opens a session in a working
+    directory with the run's MCP servers, selects the model (the session's
+    `model` config option, else ACP's unstable `session/set_model`), sends the
+    prompt and records the turn: the answer, thinking, each tool call with its
+    input and result, the turn's token usage when the agent reports it (ACP's
+    `usage`), its cumulative cost (`usage_update`), and the response `_meta`
+    (`AgentRunResult.meta`). `runIn` takes ACP's own session parameters
+    (`AcpAgentLoop.Session`: any MCP transport, additional directories,
+    `session/new` and `session/prompt` `_meta`) and a custom `initialize`, to
+    drive an agent exactly as a particular editor does. Permission requests are
+    allowed, so run it where the agent may act; the agent's own tools are its
+    own (`AgentPolicy` doesn't apply), and skills and system prompts aren't
+    supported. `RealAcpSpec` runs Kiro, and Claude with
+    `ZIO_EVALS_CLAUDE_ACP=true`.
   A host can plug in its own backend (e.g. a hosted-agent runner) by
   implementing `AgentLoop`.
 
@@ -111,13 +130,13 @@ classification per candidate and includes the calibrated probability in each
 rationale:
 
 ```scala
-import com.jamesward.zio_typesafe_ai.TypeSafeAI
+import com.jamesward.zio_decisions.typesafe.TypeSafe
 import zio.http.Client
 
 val judged = (for
   judge   <- JevJudge.make(passThreshold = 0.5)
   results <- EvalRunner.run(spec, arms, List("claude-opus-4.8"), 1, agentLoop, judge)
-yield results).provide(Client.default, TypeSafeAI.Client.live)
+yield results).provide(Client.default, TypeSafe.live)
 ```
 
 A skill can be loaded directly from a normal runtime SkillsJar dependency:
@@ -275,15 +294,15 @@ Mounting the Docker socket (for Testcontainers inside the workspace) gives the
 agent's code control of the host's Docker daemon; only do that on a machine
 where that is acceptable.
 
-### Evaluating TypeSafeAI orchestration
+### Evaluating zio-decisions orchestration
 
-Because zio-evals depends on zio-typesafe-ai, it can evaluate provider-neutral orchestration runs without depending on Bedrock or an MCP implementation. `OrchestrationLoop` is the host seam, `OrchestrationEvalAdapter` normalizes a run into `AgentRunResult`, and `OrchestrationCheck` provides deterministic checks over the complete `OrchestrationResult`. Runtime selection/classification stays in zio-typesafe-ai; grading whether the resulting answer and committed workflow are good stays here.
+Because zio-evals depends on zio-decisions, it can evaluate provider-neutral orchestration runs without depending on Bedrock or an MCP implementation. `OrchestrationLoop` is the host seam, `OrchestrationEvalAdapter` normalizes a run into `AgentRunResult`, and `OrchestrationCheck` provides deterministic checks over the complete `OrchestrationResult`. Runtime selection/classification stays in zio-decisions; grading whether the resulting answer and committed workflow are good stays here.
 
 Checks cover the selected experiment mode, operations called or omitted, committed Ready filters in both plan and no-plan execution, Jev-only or LLM-only filtering, safe fanout authorization, MCP call/failure bounds, recovery bounds, and replan counts. For example:
 
 ```scala
 import com.jamesward.zio_evals.*
-import com.jamesward.zio_typesafe_ai.orchestration.OrchestrationMode
+import com.jamesward.zio_decisions.orchestration.OrchestrationMode
 
 val checks = List(
   OrchestrationCheck.ModeIs(OrchestrationMode.NoPlan),
@@ -302,13 +321,13 @@ val normalized = OrchestrationEvalAdapter.toAgentRunResult(result)
 
 The normalized `iterations` value is the common Jev logical-turn metric. Input/output tokens combine controller Jev, internal Jev filtering, extraction, LLM-filter fallback, and summary usage without using physical-attempt totals. `toolCalls` is the physical MCP count. Transcript `ToolCall` events represent committed logical workflow operations (one event per call/fanout step, without reconstructing runtime arguments), so their count can intentionally differ from physical calls when fanout or retries occur. The transcript also includes the stable orchestration mode and action trace.
 
-The orchestration API is released in `zio-typesafe-ai` 0.1.0, which is the default pinned dependency:
+The orchestration API is released in `zio-decisions` 0.1.0, which is the default pinned dependency:
 
 ```bash
 ./sbta --server test
 ```
 
-For source-level development against `~/projects/zio-typesafe-ai`, add `-Dlocal`; the local source project then replaces the published artifact.
+For source-level development against `~/projects/zio-decisions`, add `-Dlocal`; the local source project then replaces the published artifact.
 
 ### License
 
