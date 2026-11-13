@@ -2,7 +2,7 @@ organization := "com.jamesward"
 
 name := "zio-evals"
 
-scalaVersion := "3.9.0"
+scalaVersion := "3.10.1"
 
 scalacOptions ++= Seq(
   "-language:strictEquality",
@@ -10,7 +10,7 @@ scalacOptions ++= Seq(
 )
 
 val zioVersion       = "2.1.27"
-val zioSchemaVersion = "1.9.0"
+val zioSchemaVersion = "1.9.1"
 
 val useLocal = sys.props.contains("local")
 // -Dlocal: zio-decisions and zio-acp from their sibling checkouts instead of their releases
@@ -77,4 +77,4 @@ ThisBuild / versionScheme := Some("semver-spec")
 // SkillsJars: extract agent Skills with `./sbta extractSkillsJars`
 skillsJarsOutputDir := Some(file(".kiro/skills"))
 
-libraryDependencies += "com.jamesward" % "skills" % "0.0.24" % Skills
+libraryDependencies += "com.jamesward" % "skills" % "0.0.27" % Skills
