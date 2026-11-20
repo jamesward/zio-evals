@@ -10,7 +10,7 @@ scalacOptions ++= Seq(
 )
 
 val zioVersion       = "2.1.27"
-val zioSchemaVersion = "1.9.1"
+val zioSchemaVersion = "1.9.2"
 
 val useLocal = sys.props.contains("local")
 // -Dlocal: zio-decisions and zio-acp from their sibling checkouts instead of their releases
@@ -30,7 +30,7 @@ libraryDependencies ++= Seq(
   // via zio-http's typed OpenAPI JsonSchema model (no hand-built JSON AST).
   "dev.zio" %% "zio-http"              % "3.11.6",
   // The bundled CLI agent backends (claude / kiro-cli) shell out via zio-process.
-  "dev.zio" %% "zio-process"           % "0.8.1",
+  "dev.zio" %% "zio-process"           % "0.8.2",
 
   "dev.zio" %% "zio-test"          % zioVersion % Test,
   "dev.zio" %% "zio-test-sbt"      % zioVersion % Test,
